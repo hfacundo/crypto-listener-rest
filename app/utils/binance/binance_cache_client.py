@@ -1,0 +1,347 @@
+# app/utils/binance/binance_cache_client.py
+"""
+Cliente para leer cache de Binance generado por crypto-analyzer-redis.
+Este módulo NO genera cache, solo lo consume para evitar llamadas API duplicadas.
+"""
+
+import json
+import time
+import logging
+from typing import Optional, Dict
+
+logger = logging.getLogger(__name__)
+
+class BinanceCacheClient:
+    """
+    Cliente read-only para cache de Binance generado por crypto-analyzer-redis.
+    Reduce llamadas API reutilizando datos ya cacheados.
+    """
+
+    def __init__(self, redis_client):
+        """
+        Args:
+            redis_client: Instancia de ResilientRedisClient
+        """
+        self.redis_client = redis_client
+        self.cache_prefix = "binance_cache"
+
+        # TTLs esperados (debe coincidir con crypto-analyzer-redis)
+        self.ttl_config = {
+            "mark_price": 30,
+            "orderbook": 30,
+            "ticker_24h": 60,
+        }
+
+        # Stats
+        self.stats = {
+            'cache_hits': 0,
+            'cache_misses': 0,
+            'fallback_api_calls': 0
+        }
+
+    def get_mark_price(self, symbol: str, client=None, max_age: int = 30) -> Optional[float]:
+        """
+        Obtiene mark price desde cache de crypto-analyzer-redis.
+        Si no está disponible, hace fallback a API call directo.
+
+        Args:
+            symbol: Símbolo (ej: BTCUSDT)
+            client: Cliente de Binance (para fallback)
+            max_age: Edad máxima aceptable del cache en segundos
+
+        Returns:
+            Mark price o None
+        """
+        try:
+            cache_key = f"{self.cache_prefix}:mark_price:{symbol.lower()}"
+
+            # Intentar obtener desde cache
+            cached_data = self.redis_client.get(cache_key)
+
+            if cached_data:
+                data = json.loads(cached_data)
+
+                # Verificar age
+                age = time.time() - data.get('timestamp', 0)
+
+                if age <= max_age:
+                    self.stats['cache_hits'] += 1
+                    logger.debug(f"✅ Mark price cache HIT: {symbol} (age: {age:.1f}s)")
+                    return float(data['mark_price'])
+                else:
+                    logger.debug(f"⚠️ Mark price cache STALE: {symbol} (age: {age:.1f}s)")
+
+            # Cache miss o stale - hacer fallback a API si tenemos client
+            self.stats['cache_misses'] += 1
+
+            if client:
+                logger.warning(f"⚠️ Mark price cache MISS: {symbol} - fallback to API")
+                self.stats['fallback_api_calls'] += 1
+                mark_data = client.futures_mark_price(symbol=symbol.upper())
+                return float(mark_data["markPrice"])
+            else:
+                logger.error(f"❌ Mark price cache MISS: {symbol} - no client for fallback")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Error getting mark price from cache for {symbol}: {e}")
+
+            # Fallback a API si disponible
+            if client:
+                try:
+                    self.stats['fallback_api_calls'] += 1
+                    mark_data = client.futures_mark_price(symbol=symbol.upper())
+                    return float(mark_data["markPrice"])
+                except Exception as api_error:
+                    logger.error(f"❌ API fallback also failed for {symbol}: {api_error}")
+
+            return None
+
+    def get_orderbook_data(self, symbol: str, depth_limit: int = 100, client=None, max_age: int = 30) -> Optional[Dict]:
+        """
+        Obtiene orderbook data desde cache de crypto-analyzer-redis.
+        Si no está disponible, hace fallback a API call directo.
+
+        Args:
+            symbol: Símbolo (ej: BTCUSDT)
+            depth_limit: Límite de profundidad (debe coincidir con el cache)
+            client: Cliente de Binance (para fallback)
+            max_age: Edad máxima aceptable del cache en segundos
+
+        Returns:
+            Dict con orderbook data o None
+        """
+        try:
+            cache_key = f"{self.cache_prefix}:orderbook:{symbol.lower()}:{depth_limit}"
+
+            # Intentar obtener desde cache
+            cached_data = self.redis_client.get(cache_key)
+
+            if cached_data:
+                data = json.loads(cached_data)
+
+                # Verificar age
+                age = time.time() - data.get('timestamp', 0)
+
+                if age <= max_age:
+                    self.stats['cache_hits'] += 1
+                    logger.debug(f"✅ Orderbook cache HIT: {symbol} (age: {age:.1f}s)")
+                    return data['orderbook_data']
+                else:
+                    logger.debug(f"⚠️ Orderbook cache STALE: {symbol} (age: {age:.1f}s)")
+
+            # Cache miss o stale - hacer fallback a API si tenemos client
+            self.stats['cache_misses'] += 1
+
+            if client:
+                logger.warning(f"⚠️ Orderbook cache MISS: {symbol} - fallback to API")
+                self.stats['fallback_api_calls'] += 1
+                order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
+
+                # Retornar raw orderbook (el llamador procesará según necesite)
+                return {
+                    "bids": order_book.get("bids", []),
+                    "asks": order_book.get("asks", [])
+                }
+            else:
+                logger.error(f"❌ Orderbook cache MISS: {symbol} - no client for fallback")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Error getting orderbook from cache for {symbol}: {e}")
+
+            # Fallback a API si disponible
+            if client:
+                try:
+                    self.stats['fallback_api_calls'] += 1
+                    order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
+                    return {
+                        "bids": order_book.get("bids", []),
+                        "asks": order_book.get("asks", [])
+                    }
+                except Exception as api_error:
+                    logger.error(f"❌ API fallback also failed for {symbol}: {api_error}")
+
+            return None
+
+    def get_klines_from_redis(self, symbol: str, interval: str = "1m", limit: int = 60) -> Optional[list]:
+        """
+        Obtiene klines desde Redis poblado por crypto-data-redis.
+
+        Args:
+            symbol: Símbolo (ej: BTCUSDT)
+            interval: Intervalo (1m, 5m, 15m, etc.)
+            limit: Número de klines a obtener
+
+        Returns:
+            Lista de klines o None
+        """
+        try:
+            # crypto-data-redis guarda klines con este formato de key
+            cache_key = f"klines:{interval}:{symbol.upper()}"
+
+            cached_data = self.redis_client.get(cache_key)
+
+            if cached_data:
+                klines = json.loads(cached_data)
+
+                # Tomar solo los últimos 'limit' elementos
+                if isinstance(klines, list):
+                    self.stats['cache_hits'] += 1
+                    logger.debug(f"✅ Klines cache HIT: {symbol} {interval} ({len(klines)} candles)")
+                    return klines[-limit:] if len(klines) > limit else klines
+                else:
+                    logger.warning(f"⚠️ Klines cache data invalid format: {symbol}")
+                    return None
+            else:
+                self.stats['cache_misses'] += 1
+                logger.warning(f"⚠️ Klines cache MISS: {symbol} {interval}")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Error getting klines from Redis for {symbol}: {e}")
+            return None
+
+    def get_cache_stats(self) -> Dict:
+        """
+        Obtiene estadísticas de uso del cache
+        """
+        total_requests = self.stats['cache_hits'] + self.stats['cache_misses']
+        hit_rate = (self.stats['cache_hits'] / total_requests * 100) if total_requests > 0 else 0
+
+        return {
+            'cache_hit_rate': round(hit_rate, 2),
+            'total_requests': total_requests,
+            'cache_hits': self.stats['cache_hits'],
+            'cache_misses': self.stats['cache_misses'],
+            'fallback_api_calls': self.stats['fallback_api_calls'],
+            'efficiency': 'Excellent' if hit_rate > 80 else 'Good' if hit_rate > 60 else 'Poor'
+        }
+
+    def clear_stats(self):
+        """Reset estadísticas"""
+        self.stats = {
+            'cache_hits': 0,
+            'cache_misses': 0,
+            'fallback_api_calls': 0
+        }
+
+
+# Cache local para exchange_info (casi estático)
+_exchange_info_cache = {
+    "data": None,
+    "timestamp": 0,
+    "ttl": 3600  # 1 hora
+}
+
+_leverage_bracket_cache = {}  # {symbol: {data, timestamp}}
+_leverage_bracket_ttl = 3600  # 1 hora
+
+
+def get_exchange_info_cached(client) -> Optional[Dict]:
+    """
+    Obtiene exchange_info con cache local de 1 hora.
+    Exchange info es casi estático y cambia muy raramente.
+
+    Args:
+        client: Cliente de Binance
+
+    Returns:
+        Dict con exchange info o None
+    """
+    global _exchange_info_cache
+
+    try:
+        # Verificar si cache es válido
+        age = time.time() - _exchange_info_cache["timestamp"]
+
+        if _exchange_info_cache["data"] is not None and age < _exchange_info_cache["ttl"]:
+            logger.debug(f"✅ Exchange info cache HIT (age: {age:.0f}s)")
+            return _exchange_info_cache["data"]
+
+        # Cache miss o expirado - obtener desde API
+        logger.info("⚠️ Exchange info cache MISS - fetching from API")
+        exchange_info = client.futures_exchange_info()
+
+        # Actualizar cache
+        _exchange_info_cache["data"] = exchange_info
+        _exchange_info_cache["timestamp"] = time.time()
+
+        return exchange_info
+
+    except Exception as e:
+        logger.error(f"❌ Error getting exchange_info: {e}")
+
+        # Intentar retornar cache stale si disponible
+        if _exchange_info_cache["data"] is not None:
+            logger.warning("Using stale exchange_info cache as fallback")
+            return _exchange_info_cache["data"]
+
+        return None
+
+
+def get_leverage_bracket_cached(symbol: str, client) -> Optional[list]:
+    """
+    Obtiene leverage bracket con cache local de 1 hora.
+    Leverage brackets cambian muy raramente.
+
+    Args:
+        symbol: Símbolo (ej: BTCUSDT)
+        client: Cliente de Binance
+
+    Returns:
+        Lista con leverage brackets o None
+    """
+    global _leverage_bracket_cache
+
+    try:
+        symbol_upper = symbol.upper()
+
+        # Verificar si cache es válido
+        if symbol_upper in _leverage_bracket_cache:
+            cache_entry = _leverage_bracket_cache[symbol_upper]
+            age = time.time() - cache_entry["timestamp"]
+
+            if age < _leverage_bracket_ttl:
+                logger.debug(f"✅ Leverage bracket cache HIT for {symbol} (age: {age:.0f}s)")
+                return cache_entry["data"]
+
+        # Cache miss o expirado - obtener desde API
+        logger.info(f"⚠️ Leverage bracket cache MISS for {symbol} - fetching from API")
+        brackets = client.futures_leverage_bracket(symbol=symbol_upper)
+
+        # Actualizar cache
+        _leverage_bracket_cache[symbol_upper] = {
+            "data": brackets,
+            "timestamp": time.time()
+        }
+
+        return brackets
+
+    except Exception as e:
+        logger.error(f"❌ Error getting leverage bracket for {symbol}: {e}")
+
+        # Intentar retornar cache stale si disponible
+        if symbol.upper() in _leverage_bracket_cache:
+            logger.warning(f"Using stale leverage bracket cache for {symbol}")
+            return _leverage_bracket_cache[symbol.upper()]["data"]
+
+        return None
+
+
+# Instancia global (se inicializa en main.py o donde se tenga redis_client)
+_binance_cache_client = None
+
+def get_binance_cache_client():
+    """
+    Obtiene instancia global de BinanceCacheClient.
+    Debe llamarse después de inicializar redis_client.
+    """
+    global _binance_cache_client
+
+    if _binance_cache_client is None:
+        from app.utils.db.redis_client import get_redis_client
+        redis_client = get_redis_client()
+        _binance_cache_client = BinanceCacheClient(redis_client)
+
+    return _binance_cache_client

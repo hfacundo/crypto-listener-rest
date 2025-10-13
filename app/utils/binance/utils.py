@@ -46,7 +46,7 @@ def get_dynamic_spread_multiplier(symbol: str) -> int:
 
 def get_symbol_filters(symbol: str, client) -> dict:
     """
-    Obtiene los filtros de trading para un símbolo desde Binance API.
+    Obtiene los filtros de trading para un símbolo usando cache local de exchange_info.
 
     Args:
         symbol: Símbolo de trading (ej: "BTCUSDT")
@@ -56,7 +56,12 @@ def get_symbol_filters(symbol: str, client) -> dict:
         dict: Filtros del símbolo (PRICE_FILTER, LOT_SIZE, etc.)
     """
     try:
-        exchange_info = client.futures_exchange_info()
+        from app.utils.binance.binance_cache_client import get_exchange_info_cached
+        exchange_info = get_exchange_info_cached(client)
+
+        if not exchange_info:
+            print(f"❌ Could not get exchange_info")
+            return {}
 
         for s in exchange_info["symbols"]:
             if s["symbol"] == symbol:
@@ -75,13 +80,32 @@ def get_symbol_filters(symbol: str, client) -> dict:
 
 
 def get_mark_price(symbol: str, client) -> float:
-    symbol = symbol 
+    """
+    Obtiene mark price usando cache de crypto-analyzer-redis.
+    Fallback a API si cache no disponible.
+
+    Args:
+        symbol: Símbolo (ej: BTCUSDT)
+        client: Cliente de Binance
+
+    Returns:
+        Mark price o -1.0 si falla
+    """
     try:
+        # Intentar usar cache primero
+        from app.utils.binance.binance_cache_client import get_binance_cache_client
+        cache_client = get_binance_cache_client()
+        mark_price = cache_client.get_mark_price(symbol, client=client, max_age=30)
+
+        if mark_price is not None:
+            return mark_price
+
+        # Fallback directo (cache_client ya lo intenta, pero por si acaso)
         data = client.futures_mark_price(symbol=symbol)
         return float(data["markPrice"])
     except Exception as e:
         print(f"❌ Error al obtener mark price para {symbol}: {e}")
-        return -1.0  # o lanza una excepción si prefieres
+        return -1.0
 
 
 def get_available_usdt_balance(client) -> float:
@@ -127,6 +151,7 @@ def get_current_leverage(symbol: str, client) -> int:
     """
     Obtiene el máximo leverage permitido por Binance para el símbolo dado.
     Este valor es fijo por Binance y no depende de posiciones abiertas.
+    Usa cache local de exchange_info.
 
     Args:
         symbol (str): Ej. "BTCUSDT"
@@ -135,7 +160,11 @@ def get_current_leverage(symbol: str, client) -> int:
         int: Valor máximo permitido de leverage, o -1 si ocurre error.
     """
     try:
-        info = client.futures_exchange_info()
+        from app.utils.binance.binance_cache_client import get_exchange_info_cached
+        info = get_exchange_info_cached(client)
+
+        if not info:
+            return -1
 
         for s in info["symbols"]:
             if s["symbol"] == symbol:
@@ -157,15 +186,23 @@ def get_current_leverage(symbol: str, client) -> int:
 def get_max_allowed_leverage(symbol: str, client, user_id: str) -> int:
     """
     Retorna el leverage máximo permitido para un símbolo en Binance Futures.
+    Usa cache local de leverage_bracket (TTL 1 hora).
 
     Args:
         symbol (str): Ej. BTCUSDT
+        client: Cliente de Binance
+        user_id: ID del usuario (para logging)
 
     Returns:
         int: Valor máximo permitido (ej. 125), o -1 si falla.
     """
     try:
-        brackets = client.futures_leverage_bracket(symbol=symbol)
+        from app.utils.binance.binance_cache_client import get_leverage_bracket_cached
+        brackets = get_leverage_bracket_cached(symbol, client)
+
+        if not brackets:
+            return -1
+
         return int(brackets[0]["brackets"][0]["initialLeverage"])
     except Exception as e:
         print(f"❌ Error al obtener leverage máximo para {symbol} ({user_id}): {e}")

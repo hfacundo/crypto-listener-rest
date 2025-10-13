@@ -28,10 +28,19 @@ def adjust_base_depth_and_depth_pct_for_symbol(symbol, client, order_book, mark_
     según el volumen reciente y la profundidad del order book del símbolo.
     Permite sobrescribir los tiers desde rules["liquidity_tiers"] si está definido.
 
-    Calcula dinámicamente sin cache para garantizar datos frescos.
+    Usa klines de Redis (crypto-data-redis) para evitar llamadas API innecesarias.
     """
     try:
-        klines = client.futures_klines(symbol=symbol, interval="1m", limit=60)
+        # Intentar obtener klines desde Redis primero (crypto-data-redis)
+        from app.utils.binance.binance_cache_client import get_binance_cache_client
+        cache_client = get_binance_cache_client()
+        klines = cache_client.get_klines_from_redis(symbol, interval="1m", limit=60)
+
+        # Fallback a API si Redis no disponible
+        if not klines:
+            print(f"⚠️ Klines not in Redis for {symbol}, falling back to API")
+            klines = client.futures_klines(symbol=symbol, interval="1m", limit=60)
+
         total_quote_volume = sum(float(k[7]) for k in klines)
         avg_quote_volume = total_quote_volume / 60
 

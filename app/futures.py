@@ -60,9 +60,20 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
         return {"success": False, "error": "Invalid symbol filters"}
 
     # 2. Ajustar dinámicamente profundidad mínima y profundidad relativa
-    order_book = client.futures_order_book(symbol=symbol, limit=100)
-    mark_data = client.futures_mark_price(symbol=symbol)
-    mark_price = float(mark_data["markPrice"])
+    # Usar cache para orderbook y mark_price
+    from app.utils.binance.binance_cache_client import get_binance_cache_client
+    cache_client = get_binance_cache_client()
+
+    # Obtener orderbook con cache
+    orderbook_data = cache_client.get_orderbook_data(symbol, depth_limit=100, client=client, max_age=30)
+    if orderbook_data:
+        order_book = orderbook_data
+    else:
+        # Fallback directo
+        order_book = client.futures_order_book(symbol=symbol, limit=100)
+
+    # Obtener mark_price con cache (la función get_mark_price en utils.py ya usa cache)
+    mark_price = get_mark_price(symbol, client)
     
     depth_config = adjust_base_depth_and_depth_pct_for_symbol(symbol, client, order_book, mark_price)
     min_depth = depth_config[MIN_DEPTH_BASE]
@@ -316,7 +327,7 @@ def close_position_and_cancel_orders(symbol: str, client, user_id: str, strategy
             unrealized_pnl = float(pos_info[0].get("unRealizedProfit", 0))
 
         # Obtener precio actual antes de cerrar (para PostgreSQL)
-        mark_price = float(client.futures_mark_price(symbol=symbol)["markPrice"])
+        mark_price = get_mark_price(symbol, client)
 
         side = "SELL" if position_amt > 0 else "BUY"
         qty = abs(position_amt)
@@ -376,7 +387,7 @@ def adjust_sl_tp_for_open_position(symbol: str, new_stop: float, new_target: flo
             return {"success": False, "error": "No open position to adjust"}
 
         direction = "BUY" if position_amt > 0 else "SELL"
-        mark_price = float(client.futures_mark_price(symbol=symbol)["markPrice"])
+        mark_price = get_mark_price(symbol, client)
 
         # Basic directional sanity checks to avoid inverted targets
         if direction == "BUY" and not (stop_r < mark_price <= target_r):
@@ -471,7 +482,7 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                     return {"success": False, "error": f"Looser stop not allowed (current {current_stop}, new {new_stop_f})"}
 
         # 4) Chequeo de sanidad respecto al mark actual
-        mark_price = float(client.futures_mark_price(symbol=symbol)["markPrice"])
+        mark_price = get_mark_price(symbol, client)
         if direction == "BUY" and not (new_stop_f < mark_price):
             return {"success": False, "error": "Invalid SL for LONG (expected new_stop < mark)"}
         if direction == "SELL" and not (new_stop_f > mark_price):
@@ -520,7 +531,7 @@ def half_close_and_move_be(symbol: str, client, user_id: str) -> dict:
         qty_half_raw = abs(position_amt) * 0.5
 
         # Use current mark for validation
-        mark_price = float(client.futures_mark_price(symbol=sym)["markPrice"])
+        mark_price = get_mark_price(sym, client)
 
         qty_half = adjust_quantity_to_step_size(qty_half_raw, step_size)
         if not validate_quantity(qty_half, mark_price, filters):
@@ -555,7 +566,7 @@ def half_close_and_move_be(symbol: str, client, user_id: str) -> dict:
         be_price_dec = Decimal(str(be_price))
 
         # Ensure SL is on the correct side of current mark (required by Binance)
-        current_mark = Decimal(str(client.futures_mark_price(symbol=sym)["markPrice"]))
+        current_mark = Decimal(str(get_mark_price(sym, client)))
         # Direction from remaining position:
         direction = "BUY" if remaining_amt > 0 else "SELL"
 

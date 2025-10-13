@@ -7,17 +7,26 @@ from app.utils.binance.binance_client import get_binance_client_for_user
 
 def get_fresh_market_data(symbol: str, user_id: str) -> Dict[str, Any]:
     """
-    Obtiene datos frescos de mercado para validación en Lambda
+    Obtiene datos frescos de mercado para validación usando cache cuando sea posible.
+    Fallback a API si cache no disponible.
     """
     try:
+        from app.utils.binance.binance_cache_client import get_binance_cache_client
+        from app.utils.binance.utils import get_mark_price
+
         client = get_binance_client_for_user(user_id)
+        cache_client = get_binance_cache_client()
 
-        # Llamadas en paralelo para optimizar
-        mark_data = client.futures_mark_price(symbol=symbol.upper())
-        mark_price = float(mark_data["markPrice"])
+        # Mark price con cache (30s TTL)
+        mark_price = get_mark_price(symbol.upper(), client)
 
-        # Orderbook liviano para validación de liquidez
-        orderbook = client.futures_order_book(symbol=symbol.upper(), limit=20)
+        # Orderbook liviano con cache (30s TTL)
+        orderbook_data = cache_client.get_orderbook_data(symbol.upper(), depth_limit=20, client=client, max_age=30)
+        if orderbook_data and "bids" in orderbook_data and "asks" in orderbook_data:
+            orderbook = orderbook_data
+        else:
+            # Fallback a API
+            orderbook = client.futures_order_book(symbol=symbol.upper(), limit=20)
 
         best_bid = float(orderbook["bids"][0][0]) if orderbook["bids"] else 0
         best_ask = float(orderbook["asks"][0][0]) if orderbook["asks"] else 0
