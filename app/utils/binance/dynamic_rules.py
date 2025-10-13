@@ -8,9 +8,7 @@ from app.utils.constants import (
     MAX_SLIPPAGE_PCT, MAX_SLIPPAGE, DEFAULT_MAX_SLIPPAGE_PCT,
     DEFAULT_MAX_SLIPPAGE, TABLE_CRYPTOS
 )
-from app.utils.binance.s3 import (
-    load_depth_config_from_s3, save_depth_config_to_s3
-)
+# S3 cache removed - data fetched directly from Binance
 
 # Lazy initialization del engine (solo cuando se necesita consultar BD)
 _engine = None
@@ -29,14 +27,9 @@ def adjust_base_depth_and_depth_pct_for_symbol(symbol, client, order_book, mark_
     Ajusta dinámicamente los valores de `min_depth_base` y `depth_pct`
     según el volumen reciente y la profundidad del order book del símbolo.
     Permite sobrescribir los tiers desde rules["liquidity_tiers"] si está definido.
+
+    Calcula dinámicamente sin cache para garantizar datos frescos.
     """
-
-    cached = load_depth_config_from_s3(symbol)
-
-    if cached:
-        print(f"📦 Usando depth_config en cache para {symbol}")
-        return cached
-
     try:
         klines = client.futures_klines(symbol=symbol, interval="1m", limit=60)
         total_quote_volume = sum(float(k[7]) for k in klines)
@@ -65,11 +58,11 @@ def adjust_base_depth_and_depth_pct_for_symbol(symbol, client, order_book, mark_
         for tier in tiers:
             if avg_quote_volume > tier["vol"] and depth_usdt > tier["depth"]:
                 result = {MIN_DEPTH_BASE: tier[MIN_DEPTH_BASE], DEPTH_PCT: tier[DEPTH_PCT]}
-                save_depth_config_to_s3(symbol, result)
+                print(f"✅ Dynamic depth config for {symbol}: {result}")
                 return result
 
         fallback = {MIN_DEPTH_BASE: 10000, DEPTH_PCT: 0.01}
-        save_depth_config_to_s3(symbol, fallback)
+        print(f"⚠️ Using fallback depth config for {symbol}: {fallback}")
         return fallback
 
     except Exception as e:

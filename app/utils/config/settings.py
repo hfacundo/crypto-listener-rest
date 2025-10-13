@@ -46,14 +46,4 @@ def get_database_url() -> str:
         raise RuntimeError("❌ La variable DATABASE_URL_CRYPTO_TRADER no está definida.")
     return url
 
-def get_bucket_name() -> str:
-    url = os.environ.get("S3_BUCKET_NAME")
-    if not url:
-        raise RuntimeError("❌ La variable S3_BUCKET_NAME no está definida.")
-    return url
-
-def get_sns_topic_arn() -> str:
-    arn = os.environ.get("SNS_TOPIC_ARN")
-    if not arn:
-        raise RuntimeError("❌ La variable SNS_TOPIC_ARN no está definida.")
-    return arn
+# S3 and SNS functions removed - not needed in REST API version

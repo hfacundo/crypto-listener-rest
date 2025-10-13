@@ -48,12 +48,6 @@ export BINANCE_FUTURES_API_KEY_FUTURES="BmkwNIpR8putPUsnFYsuH1acfkvLDTwUEvDb4JWh
 export BINANCE_FUTURES_API_SECRET_FUTURES="N8I5dnZ8RkZ5Mqyc3j9bpauFPHy5QSGtILNnNPUOqxeFMAEuZSjQUi4kkyz0UrDO"
 ```
 
-### 5. Optional - S3 Bucket (si lo necesitas)
-
-```bash
-export S3_BUCKET_NAME="aws-sam-cli-managed-default-samclisourcebucket-573uv63tjbkp"
-```
-
 ---
 
 ## Pasos para Configurar

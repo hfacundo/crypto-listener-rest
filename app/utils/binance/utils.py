@@ -13,9 +13,6 @@ from app.utils.config.settings import (
     COPY_TRADING, COPY_2
 )
 from app.utils.db.query_executor import get_category
-from app.utils.binance.s3 import (
-    load_filters_from_s3, save_filters_to_s3
-)
 
 def get_dynamic_spread_limits(symbol: str, filters: dict, mark_price: float) -> dict:
     tick_size = float(filters["PRICE_FILTER"]["tickSize"])
@@ -48,36 +45,33 @@ def get_dynamic_spread_multiplier(symbol: str) -> int:
 
 
 def get_symbol_filters(symbol: str, client) -> dict:
-    filters_cache = load_filters_from_s3()
+    """
+    Obtiene los filtros de trading para un símbolo desde Binance API.
 
-    # Verificar si los filtros están presentes y actualizados
+    Args:
+        symbol: Símbolo de trading (ej: "BTCUSDT")
+        client: Cliente de Binance
+
+    Returns:
+        dict: Filtros del símbolo (PRICE_FILTER, LOT_SIZE, etc.)
+    """
     try:
-        if filters_cache:
-            updated_at = filters_cache.get("_updated_at")
-            if updated_at:
-                    updated_time = datetime.fromisoformat(updated_at).astimezone(timezone.utc)
-                    if datetime.now(timezone.utc) - updated_time < timedelta(hours=12):
-                        if symbol in filters_cache:
-                            return filters_cache[symbol]
+        exchange_info = client.futures_exchange_info()
+
+        for s in exchange_info["symbols"]:
+            if s["symbol"] == symbol:
+                f_dict = {}
+                for f in s["filters"]:
+                    f_dict[f["filterType"]] = f
+                return f_dict
+
+        print(f"⚠️ Symbol {symbol} not found in exchange info")
+        return {}
+
     except Exception as e:
+        print(f"❌ Error getting filters for {symbol}: {e}")
         traceback.print_exc()
-        print(f"⚠️ Error al interpretar fecha de actualización: {e}")
-
-    # Si no hay filtros válidos o están vencidos, los descarga
-    print(f"📥 Descargando filtros desde Binance...")
-    exchange_info = client.futures_exchange_info()
-    new_filters = {}
-    for s in exchange_info["symbols"]:
-        f_dict = {}
-        for f in s["filters"]:
-            f_dict[f["filterType"]] = f
-        new_filters[s["symbol"]] = f_dict
-
-    # Guardar en S3
-    new_filters["_updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_filters_to_s3(new_filters)
-
-    return new_filters.get(symbol, {})
+        return {}
 
 
 def get_mark_price(symbol: str, client) -> float:

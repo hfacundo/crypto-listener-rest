@@ -221,7 +221,7 @@ def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, pr
 
 
 # NOTE: get_symbol_filters is imported from app.utils.binance.utils (line 40)
-# The imported version has S3 caching which is more efficient than fetching from API every time
+# Fetches filters directly from Binance API (no caching needed on EC2)
 
 # NEW: helper to read current position amount (+long / -short / 0)
 def _get_position_amt(symbol: str, client) -> float:
