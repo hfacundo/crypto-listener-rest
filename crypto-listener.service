@@ -1,0 +1,51 @@
+[Unit]
+Description=crypto-listener REST API for immediate trade execution
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/crypto-listener-rest
+Environment="PATH=/home/ubuntu/crypto-listener-rest/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="DEPLOYMENT_ENV=main"
+
+# Database connection (same variable name as crypto-analyzer-redis)
+Environment="DATABASE_URL_CRYPTO_TRADER=postgresql://app_user:YOUR_PASSWORD@localhost:5432/crypto_trader"
+
+# Redis configuration
+Environment="REDIS_HOST=localhost"
+Environment="REDIS_PORT=6379"
+Environment="REDIS_DB=0"
+
+# Binance API Keys (IMPORTANT: Move to a secure secret management system in production)
+Environment="BINANCE_FUTURES_API_KEY_COPY=qh1PdpDQeb35GU0uOW3KW9dgR0jwxviO2fCioVNJqqvGz4eq1rmykxpkVO8vL5XI"
+Environment="BINANCE_FUTURES_API_SECRET_COPY=BDOz5jI7KJqtrY6Uh3MDH9w1MRaduL0LgMlzzM95HbnF3E89tTpan6Fnrnkf0jHJ"
+Environment="BINANCE_FUTURES_API_KEY_FUTURES=BmkwNIpR8putPUsnFYsuH1acfkvLDTwUEvDb4JWhm2Ftue9lZHBIiUTO10jzX05U"
+Environment="BINANCE_FUTURES_API_SECRET_FUTURES=N8I5dnZ8RkZ5Mqyc3j9bpauFPHy5QSGtILNnNPUOqxeFMAEuZSjQUi4kkyz0UrDO"
+Environment="BINANCE_FUTURES_API_KEY_HUFSA=i1sYMFZhAQxm7jxCwidTz6X6kJShQ4xWovia47f2hvTTpQmc6nMOUkAMUyhvnwAp"
+Environment="BINANCE_FUTURES_API_SECRET_HUFSA=aDD799IsGlWj496hZMLd46OVcrRF4OwVv012QZcG5kYaS1QdpVeTdbk00WVtipz7"
+Environment="BINANCE_FUTURES_API_KEY_COPY_2=D6kUNq3KZHshG6eogeEJ16M0bkdX7saFLWNEKiVzbaEThaoGevHfMeLYOQIvo7Uj"
+Environment="BINANCE_FUTURES_API_SECRET_COPY_2=nXNJDigTLNLQZRxr6gj5coBGblBSaMKuWH6ADjIRdeMknWNRRSovLxr4GGYKvdDg"
+
+ExecStart=/home/ubuntu/crypto-listener-rest/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --log-level info
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=5min
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crypto-listener
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,576 @@
+"""
+crypto-listener-rest: FastAPI service for immediate trade execution
+"""
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import json
+import time
+from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Any, List, Optional
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+# Import existing crypto-listener logic
+from app.futures import (
+    create_trade,
+    close_position_and_cancel_orders,
+    adjust_sl_tp_for_open_position,
+    adjust_stop_only_for_open_position,
+    half_close_and_move_be,
+)
+from app.multi_user_execution import execute_multi_user_guardian_action
+from app.market_validation import get_fresh_market_data, validate_guardian_decision_freshness, should_proceed_with_execution
+from app.trade_limits import check_trade_limit, log_trade_limit_status, get_trade_limit_summary
+
+from app.utils.db.query_executor import get_rules, is_symbol_banned
+from app.utils.binance.binance_client import get_binance_client_for_user
+from app.utils.config.settings import (
+    COPY_TRADING, FUTURES, HUFSA, COPY_2
+)
+from app.utils.binance.utils import is_trade_allowed_by_schedule_utc
+from app.utils.sqs_evaluator import SQSEvaluator
+from app.utils.user_risk_validator import UserRiskProfileValidator
+
+# Configuration
+DEPLOYMENT_ENV = os.environ.get("DEPLOYMENT_ENV", "main")
+
+if DEPLOYMENT_ENV == "main":
+    USERS = [COPY_TRADING, HUFSA, COPY_2, FUTURES]
+    print(f"🟢 Entorno: PRINCIPAL (4 usuarios: COPY_TRADING, HUFSA, COPY_2, FUTURES)")
+elif DEPLOYMENT_ENV == "secondary":
+    USERS = [COPY_2, FUTURES]
+    print(f"🟡 Entorno: SECUNDARIO (COPY_2, FUTURES)")
+else:
+    raise ValueError(f"DEPLOYMENT_ENV inválido: {DEPLOYMENT_ENV}")
+
+STRATEGY = "archer_dual"
+
+# FastAPI app
+app = FastAPI(
+    title="crypto-listener-rest",
+    description="REST API for immediate crypto trade execution",
+    version="1.0.0"
+)
+
+# Pydantic models for request validation
+class TradeRequest(BaseModel):
+    """Request model for trade execution"""
+    symbol: str = Field(..., description="Trading pair (e.g., BTCUSDT)")
+    entry: float = Field(..., description="Entry price")
+    stop: float = Field(..., description="Stop loss price")
+    target: float = Field(..., description="Target price")
+    trade: str = Field(..., description="Trade direction: LONG or SHORT")
+    rr: float = Field(..., description="Risk/Reward ratio")
+    probability: float = Field(..., description="Win probability percentage")
+    strategy: str = Field(default="archer_dual", description="Strategy name")
+    signal_quality_score: Optional[float] = Field(default=0, description="Signal quality score")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "symbol": "BTCUSDT",
+                "entry": 45000.0,
+                "stop": 44500.0,
+                "target": 46000.0,
+                "trade": "LONG",
+                "rr": 2.0,
+                "probability": 75.0,
+                "strategy": "archer_dual",
+                "signal_quality_score": 8.5
+            }
+        }
+
+class GuardianRequest(BaseModel):
+    """Request model for guardian actions"""
+    symbol: str = Field(..., description="Trading pair")
+    action: str = Field(..., description="Action: close, adjust, half_close")
+    stop: Optional[float] = Field(default=None, description="New stop price (for adjust)")
+    target: Optional[float] = Field(default=None, description="New target price")
+    user_id: Optional[str] = Field(default=None, description="Specific user (optional)")
+    market_context: Optional[Dict[str, Any]] = Field(default=None, description="Market context data")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "symbol": "BTCUSDT",
+                "action": "close",
+                "user_id": "User_1"
+            }
+        }
+
+# Core trade processing logic (from Lambda)
+def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
+    """
+    Procesa un trade para un usuario específico de forma síncrona.
+
+    Args:
+        user_id: ID del usuario
+        message: Datos del trade
+        strategy: Estrategia a usar
+
+    Returns:
+        dict con resultado: {"user_id": str, "success": bool, "reason": str}
+    """
+    log_prefix = f"[{user_id}]"
+
+    try:
+        print(f"{log_prefix} Validando trade")
+        rules = get_rules(user_id, strategy)
+
+        if not rules.get("enabled"):
+            print(f"{log_prefix} Usuario deshabilitado")
+            return {"user_id": user_id, "success": False, "reason": "user_disabled"}
+
+        # Extraer campos del mensaje
+        symbol = message.get("symbol")
+        entry_price = message.get("entry")
+        stop_loss = message.get("stop")
+        target_price = message.get("target")
+        direction = message.get("trade")
+        rr = message.get("rr")
+        probability = message.get("probability")
+        signal_quality_score = message.get("signal_quality_score", 0)
+
+        print(f"{log_prefix} {symbol} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}")
+
+        # BANNED SYMBOLS VALIDATION
+        if is_symbol_banned(user_id, strategy, symbol):
+            print(f"{log_prefix} Trade REJECTED: {symbol} is in banned symbols list")
+            return {"user_id": user_id, "success": False, "reason": "banned_symbol"}
+
+        # VALIDACIÓN INTEGRADA
+        validator = UserRiskProfileValidator(user_id, strategy, rules)
+
+        can_trade, reason, validation_data = validator.validate_trade(
+            symbol=symbol,
+            direction=direction,
+            entry_price=entry_price,
+            stop_price=stop_loss,
+            target_price=target_price,
+            probability=probability,
+            sqs=signal_quality_score,
+            rr=rr
+        )
+
+        if not can_trade:
+            print(f"{log_prefix} Trade REJECTED: {reason}")
+
+            # Log información adicional según el tipo de rechazo
+            if validation_data.get("current_count") is not None:
+                current_count = validation_data.get("current_count", 0)
+                max_allowed = validation_data.get("max_allowed", 0)
+                print(f"{log_prefix}    Current: {current_count}/{max_allowed} trades open")
+
+                if validation_data.get("current_symbols"):
+                    symbols_str = ', '.join(validation_data["current_symbols"])
+                    print(f"{log_prefix}    Open positions: {symbols_str}")
+
+            if validation_data.get("daily_loss_pct") is not None:
+                daily_loss = validation_data.get("daily_loss_pct", 0)
+                print(f"{log_prefix}    Daily loss: {daily_loss:.2f}%")
+
+            if validation_data.get("last_stop_hours_ago") is not None:
+                hours_ago = validation_data.get("last_stop_hours_ago", 0)
+                cooldown = validation_data.get("cooldown_required_hours", 0)
+                print(f"{log_prefix}    Last stop: {hours_ago:.1f}h ago (cooldown: {cooldown}h)")
+
+            return {"user_id": user_id, "success": False, "reason": reason}
+
+        # Obtener capital_multiplier del SQS
+        capital_multiplier = validation_data.get("capital_multiplier", 1.0)
+        sqs_grade = validation_data.get("sqs_grade", "N/A")
+        print(f"{log_prefix} ALL VALIDATIONS PASSED")
+        print(f"{log_prefix} Capital multiplier: {capital_multiplier:.1f}x ({sqs_grade})")
+
+        # Log remaining slots if limits are configured
+        if validation_data.get("max_allowed", 999) < 999:
+            remaining = validation_data.get("max_allowed", 0) - validation_data.get("current_count", 0)
+            print(f"{log_prefix} Trade slots: {remaining} remaining")
+
+        # Crear el trade
+        client = get_binance_client_for_user(user_id)
+        print(f"{log_prefix} Seteando binance client")
+
+        order = create_trade(
+            symbol, entry_price, stop_loss, target_price, direction,
+            rr, probability, rules, client, user_id, strategy,
+            signal_quality_score, capital_multiplier
+        )
+
+        if order is not None and order.get("success"):
+            print(f"{log_prefix} Trade exitoso")
+
+            # REGISTRAR EN POSTGRESQL Y REDIS
+            try:
+                trade_id = validator.record_trade_opened(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_time=datetime.now(timezone.utc),
+                    entry_price=entry_price,
+                    stop_price=stop_loss,
+                    target_price=target_price,
+                    probability=probability,
+                    sqs=signal_quality_score,
+                    rr=rr
+                )
+
+                if trade_id and trade_id != -1:
+                    print(f"{log_prefix} Trade registered in PostgreSQL: trade_id={trade_id}")
+
+                    # Guardar trade_id en Redis
+                    try:
+                        from app.utils.db.redis_client import get_redis_client
+                        redis_client = get_redis_client()
+                        if redis_client:
+                            redis_key = f"trade_id:{user_id}:{symbol.upper()}"
+                            redis_client.setex(redis_key, 7*24*3600, str(trade_id))
+                            print(f"{log_prefix} Trade ID saved to Redis: {redis_key} = {trade_id}")
+
+                            # DUAL WRITE: Guardian trade data
+                            guardian_trade_data = {
+                                "symbol": symbol.upper(),
+                                "side": direction.upper(),
+                                "entry": entry_price,
+                                "stop": stop_loss,
+                                "target": target_price,
+                                "user_id": user_id,
+                                "strategy": strategy,
+                                "timestamp": time.time(),
+                                "rr": rr,
+                                "probability": probability,
+                                "sqs": signal_quality_score,
+                                "trade_id": trade_id
+                            }
+                            guardian_key = f"guardian:trades:{user_id}:{symbol.upper()}"
+                            redis_client.setex(
+                                guardian_key,
+                                7 * 24 * 3600,
+                                json.dumps(guardian_trade_data)
+                            )
+                            print(f"{log_prefix} Guardian trade saved to Redis: {guardian_key}")
+
+                    except Exception as e:
+                        print(f"{log_prefix} Error saving to Redis: {e}")
+
+            except Exception as e:
+                print(f"{log_prefix} Error registering trade in PostgreSQL: {e}")
+
+            return {"user_id": user_id, "success": True, "reason": "trade_created", "trade_id": trade_id if 'trade_id' in locals() else None}
+        else:
+            print(f"{log_prefix} Trade no realizado")
+            return {"user_id": user_id, "success": False, "reason": "order_failed"}
+
+    except Exception as e:
+        print(f"{log_prefix} Error processing: {e}")
+        import traceback
+        print(f"{log_prefix} Traceback: {traceback.format_exc()}")
+        return {"user_id": user_id, "success": False, "reason": f"exception: {str(e)}"}
+
+
+# API Endpoints
+@app.post("/execute-trade")
+async def execute_trade(trade: TradeRequest) -> JSONResponse:
+    """
+    Ejecuta un trade inmediatamente para todos los usuarios configurados.
+
+    Procesa de forma síncrona sin cola - si falla, falla inmediatamente.
+    """
+    start_time = time.time()
+
+    print(f"📩 Trade request received: {trade.symbol} {trade.trade} @ {trade.entry}")
+
+    # Validar campos requeridos
+    if not all([trade.symbol, trade.entry, trade.stop, trade.target, trade.trade, trade.rr, trade.probability]):
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    # Convertir a dict para procesar
+    message = trade.model_dump()
+
+    # PARALLEL EXECUTION: Process all users simultaneously
+    print(f"🚀 Processing trade for {len(USERS)} users in parallel")
+
+    with ThreadPoolExecutor(max_workers=len(USERS), thread_name_prefix="User") as executor:
+        # Submit all user tasks
+        futures = {
+            executor.submit(process_user_trade, user_id, message, STRATEGY): user_id
+            for user_id in USERS
+        }
+
+        # Collect results as they complete
+        results = []
+        for future in as_completed(futures):
+            user_id = futures[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                print(f"❌ Exception in thread for {user_id}: {e}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
+                results.append({"user_id": user_id, "success": False, "reason": f"thread_exception: {str(e)}"})
+
+    # Log summary
+    successful = sum(1 for r in results if r.get("success"))
+    failed = len(results) - successful
+    execution_time = time.time() - start_time
+
+    print(f"📊 Trade processing complete: {successful} successful, {failed} failed in {execution_time:.3f}s")
+
+    for result in results:
+        status = "✅" if result["success"] else "❌"
+        print(f"{status} {result['user_id']}: {result['reason']}")
+
+    return JSONResponse(
+        status_code=200 if successful > 0 else 400,
+        content={
+            "status": "completed",
+            "symbol": trade.symbol,
+            "successful": successful,
+            "failed": failed,
+            "total_users": len(USERS),
+            "execution_time_sec": round(execution_time, 3),
+            "results": results
+        }
+    )
+
+
+@app.post("/guardian")
+async def guardian_action(guardian: GuardianRequest) -> JSONResponse:
+    """
+    Ejecuta una acción del guardian (close, adjust, half_close) inmediatamente.
+    """
+    start_time = time.time()
+
+    print(f"🚨 Guardian request: {guardian.action} on {guardian.symbol}")
+
+    symbol = guardian.symbol
+    action = guardian.action.lower()
+
+    # Validaciones básicas
+    if action not in ["close", "adjust", "half_close"]:
+        raise HTTPException(status_code=400, detail="Invalid action. Must be: close, adjust, or half_close")
+
+    if action == "adjust" and guardian.stop is None:
+        raise HTTPException(status_code=400, detail="'adjust' requires 'stop' parameter")
+
+    # Detectar mensaje enhanced vs legacy
+    market_context = guardian.market_context or {}
+    is_enhanced_message = bool(market_context.get("trigger_price"))
+
+    if is_enhanced_message:
+        print(f"📊 Enhanced message with trigger_price: {market_context.get('trigger_price')}")
+
+    # Determinar usuarios activos
+    target_user_id = guardian.user_id
+
+    if target_user_id:
+        # Modo específico: solo este usuario
+        print(f"🎯 Guardian action for specific user: {target_user_id}")
+
+        if target_user_id not in USERS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"User {target_user_id} not in this environment ({DEPLOYMENT_ENV})"
+            )
+
+        # Verificar guardian habilitado
+        rules = get_rules(target_user_id, STRATEGY)
+        if not rules.get("use_guardian", True):
+            raise HTTPException(status_code=400, detail=f"{target_user_id} has guardian disabled")
+
+        # Reglas específicas por acción
+        if action == "close" and rules.get("use_guardian_half", False):
+            raise HTTPException(status_code=400, detail=f"{target_user_id} uses half_close mode")
+        elif action == "half_close" and not rules.get("use_guardian_half", False):
+            raise HTTPException(status_code=400, detail=f"{target_user_id} doesn't use half_close mode")
+
+        active_users = [target_user_id]
+    else:
+        # Modo legacy: todos los usuarios con guardian habilitado
+        print(f"📢 Guardian action for all users")
+        active_users = []
+        for user_id in USERS:
+            try:
+                rules = get_rules(user_id, STRATEGY)
+                if not rules.get("use_guardian", True):
+                    print(f"⛔ {user_id} has guardian disabled")
+                    continue
+
+                # Reglas específicas por acción
+                if action == "close" and rules.get("use_guardian_half", False):
+                    print(f"⏭️ {user_id} uses half_close mode, skipping regular close")
+                    continue
+                elif action == "half_close" and not rules.get("use_guardian_half", False):
+                    print(f"⏭️ {user_id} doesn't use half_close mode")
+                    continue
+
+                active_users.append(user_id)
+            except Exception as e:
+                print(f"⛔ Error checking rules for {user_id}: {e}")
+                continue
+
+    if not active_users:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No active users for guardian action {action} on {symbol}"
+        )
+
+    print(f"👥 Active users for {action}: {active_users}")
+
+    # Ejecutar guardian action
+    try:
+        message = guardian.model_dump()
+
+        if is_enhanced_message:
+            # Usar el nuevo sistema optimizado
+            execution_summary = execute_multi_user_guardian_action(active_users, symbol, message)
+
+            success_rate = execution_summary.get("success_rate", 0)
+            total_time = execution_summary.get("total_execution_time_sec", 0)
+            print(f"📊 Guardian execution completed: {success_rate:.1f}% success in {total_time:.3f}s")
+
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "completed",
+                    "action": action,
+                    "symbol": symbol,
+                    "execution_summary": execution_summary
+                }
+            )
+        else:
+            # Fallback: lógica legacy
+            print("⚠️ Using legacy execution for non-enhanced message")
+
+            new_stop = guardian.stop
+            new_target = guardian.target
+            results = []
+
+            for user_id in active_users:
+                try:
+                    client = get_binance_client_for_user(user_id)
+
+                    if action == "close":
+                        print(f"🚨 [legacy] Closing {symbol} for {user_id}")
+                        res = close_position_and_cancel_orders(symbol, client, user_id, STRATEGY)
+                        results.append({"user_id": user_id, "success": True, "result": res})
+
+                    elif action == "adjust":
+                        stop_price = float(new_stop)
+                        print(f"🚨 [legacy] Adjusting STOP {symbol} for {user_id} -> {stop_price}")
+                        res = adjust_stop_only_for_open_position(symbol.upper(), stop_price, client, user_id)
+                        results.append({"user_id": user_id, "success": True, "result": res})
+
+                    elif action == "half_close":
+                        print(f"💰 [legacy] HALF-CLOSE {symbol} for {user_id}")
+                        res = half_close_and_move_be(symbol.upper(), client, user_id)
+                        results.append({"user_id": user_id, "success": True, "result": res})
+
+                except Exception as e:
+                    print(f"❌ Legacy execution failed for {user_id}: {e}")
+                    results.append({"user_id": user_id, "success": False, "error": str(e)})
+
+            execution_time = time.time() - start_time
+            successful = sum(1 for r in results if r.get("success"))
+
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "completed",
+                    "action": action,
+                    "symbol": symbol,
+                    "successful": successful,
+                    "failed": len(results) - successful,
+                    "execution_time_sec": round(execution_time, 3),
+                    "results": results
+                }
+            )
+
+    except Exception as e:
+        print(f"❌ Guardian execution failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Guardian execution failed: {str(e)}")
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    try:
+        # Test database connection
+        from app.utils.db.query_executor import get_engine
+        from sqlalchemy import text
+
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+
+    return {
+        "status": "ok",
+        "service": "crypto-listener-rest",
+        "environment": DEPLOYMENT_ENV,
+        "users": USERS,
+        "strategy": STRATEGY,
+        "database": db_status
+    }
+
+
+@app.get("/stats")
+async def get_stats():
+    """Get current trade statistics for all users"""
+    try:
+        stats = {}
+        for user_id in USERS:
+            try:
+                rules = get_rules(user_id, STRATEGY)
+                summary = get_trade_limit_summary(user_id, rules)
+                stats[user_id] = summary
+            except Exception as e:
+                stats[user_id] = {"error": str(e)}
+
+        return {
+            "status": "ok",
+            "environment": DEPLOYMENT_ENV,
+            "strategy": STRATEGY,
+            "user_stats": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+
+
+@app.get("/")
+async def root():
+    """Root endpoint with service information"""
+    return {
+        "service": "crypto-listener-rest",
+        "version": "1.0.0",
+        "description": "REST API for immediate crypto trade execution",
+        "endpoints": {
+            "POST /execute-trade": "Execute a trade immediately",
+            "POST /guardian": "Execute guardian action (close/adjust/half_close)",
+            "GET /health": "Health check",
+            "GET /stats": "Get trade statistics",
+            "GET /docs": "Interactive API documentation"
+        }
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # Run on localhost only (not exposed to internet)
+    uvicorn.run(
+        app,
+        host="127.0.0.1",  # localhost only
+        port=8000,
+        log_level="info"
+    )
