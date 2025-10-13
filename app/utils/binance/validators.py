@@ -435,7 +435,7 @@ def create_market_order(symbol: str, direction: str, quantity: float, retries: i
     }
 
 
-def create_stop_loss_order(symbol: str, direction: str, stop_price: float, client, user_id: str) -> dict:
+def create_stop_loss_order(symbol: str, direction: str, stop_price: float, client, user_id: str, working_type: str = "CONTRACT_PRICE") -> dict:
     """
     Crea una orden STOP_MARKET en Binance Futures para cortar pérdidas (Stop Loss).
 
@@ -443,10 +443,17 @@ def create_stop_loss_order(symbol: str, direction: str, stop_price: float, clien
         symbol (str): Ej. "BTCUSDT"
         side (str): "SELL" para posiciones LONG, "BUY" para posiciones SHORT
         stop_price (float): Precio de activación del SL
-        quantity (float): Cantidad de contratos a vender/comprar
+        client: Cliente de Binance
+        user_id (str): ID del usuario
+        working_type (str): "CONTRACT_PRICE" (last price - más rápido) o "MARK_PRICE" (mark price - más estable)
+                           Default: CONTRACT_PRICE para mejor protección en crashes
 
     Returns:
         dict: Respuesta de Binance si fue exitosa, None si falló.
+
+    Nota sobre workingType:
+        - CONTRACT_PRICE (Last Price): Ejecuta inmediatamente en crashes reales, mejor protección en liquidaciones masivas
+        - MARK_PRICE: Más estable, evita wicks pero puede retrasarse en crashes
     """
     try:
         result = client.futures_create_order(
@@ -455,10 +462,10 @@ def create_stop_loss_order(symbol: str, direction: str, stop_price: float, clien
             type="STOP_MARKET",
             stopPrice=stop_price,
             closePosition=True,  # ✅ cerrar toda la posición automáticamente
-            workingType="MARK_PRICE",  # ✅ usar precio de mercado como disparador
+            workingType=working_type,  # CONTRACT_PRICE (last price) o MARK_PRICE
             newOrderRespType="RESULT"
         )
-        print(f"✅ Orden STOP_MARKET (closePosition=True) creada: {direction} {symbol} ({user_id}) @ {stop_price}")
+        print(f"✅ Orden STOP_MARKET ({working_type}) creada: {direction} {symbol} ({user_id}) @ {stop_price}")
         return result
     except Exception as e:
         print(f"❌ Error al crear STOP_MARKET para {symbol} ({user_id}): {e}")
