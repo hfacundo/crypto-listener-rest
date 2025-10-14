@@ -69,6 +69,7 @@ class TradeRequest(BaseModel):
     probability: float = Field(..., description="Win probability percentage")
     strategy: str = Field(default="archer_dual", description="Strategy name")
     signal_quality_score: Optional[float] = Field(default=0, description="Signal quality score")
+    tier: Optional[int] = Field(default=None, description="Signal tier (1-10) from crypto-analyzer-redis")
 
     class Config:
         json_schema_extra = {
@@ -81,7 +82,8 @@ class TradeRequest(BaseModel):
                 "rr": 2.0,
                 "probability": 75.0,
                 "strategy": "archer_dual",
-                "signal_quality_score": 8.5
+                "signal_quality_score": 8.5,
+                "tier": 3
             }
         }
 
@@ -118,6 +120,18 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
     """
     log_prefix = f"[{user_id}]"
 
+    # ✨ FIX: Ensure event loop exists in thread (for Binance async operations)
+    # Some Binance client operations may use asyncio internally, and threads
+    # created by ThreadPoolExecutor don't have an event loop by default
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        # No event loop in this thread, create one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        print(f"{log_prefix} Created new event loop for thread")
+
     try:
         print(f"{log_prefix} Validando trade")
         rules = get_rules(user_id, strategy)
@@ -135,8 +149,10 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         rr = message.get("rr")
         probability = message.get("probability")
         signal_quality_score = message.get("signal_quality_score", 0)
+        tier = message.get("tier")  # ✨ NEW: Extract tier from crypto-analyzer-redis
 
-        print(f"{log_prefix} {symbol} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}")
+        tier_info = f" TIER {tier}" if tier else ""
+        print(f"{log_prefix} {symbol} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}{tier_info}")
 
         # BANNED SYMBOLS VALIDATION
         if is_symbol_banned(user_id, strategy, symbol):
@@ -154,7 +170,8 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
             target_price=target_price,
             probability=probability,
             sqs=signal_quality_score,
-            rr=rr
+            rr=rr,
+            tier=tier  # ✨ NEW: Pass tier to validator
         )
 
         if not can_trade:

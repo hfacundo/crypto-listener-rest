@@ -38,7 +38,7 @@ class SQSEvaluator:
             ]
         }
 
-    def evaluate_trade(self, probability: float, sqs: float, rr_ratio: float = 1.0, symbol: str = "UNKNOWN") -> Dict:
+    def evaluate_trade(self, probability: float, sqs: float, rr_ratio: float = 1.0, symbol: str = "UNKNOWN", tier: int = None) -> Dict:
         """
         Evaluate trade and return decision with detailed breakdown
 
@@ -47,6 +47,7 @@ class SQSEvaluator:
             sqs: Signal Quality Score (0-100)
             rr_ratio: Risk-reward ratio
             symbol: Trading symbol for logging
+            tier: Tier from crypto-analyzer-redis (1-10, where 1-9 = approved, 10 = rejected)
 
         Returns:
             {
@@ -60,6 +61,52 @@ class SQSEvaluator:
         """
         self._current_symbol = symbol
 
+        # ═══════════════════════════════════════════════════════════════════
+        # PRIORITY 1: Trust tier from crypto-analyzer-redis (if provided)
+        # ═══════════════════════════════════════════════════════════════════
+        if tier is not None:
+            if tier <= 9:
+                # Tier 1-9 = approved by crypto-analyzer-redis
+                # Find best matching capital multiplier from our tiers
+                best_match = self._find_best_tier_match(probability, sqs)
+                final_multiplier = self._apply_bonuses(probability, sqs, best_match['capital_multiplier'])
+                quality_grade = self._classify_quality(probability, sqs)
+                frequency_class = self._classify_frequency(probability, sqs)
+
+                result = {
+                    'action': 'accept',
+                    'capital_multiplier': final_multiplier,
+                    'quality_grade': quality_grade,
+                    'frequency_class': frequency_class,
+                    'reason': f'Approved by crypto-analyzer TIER {tier} - {best_match.get("description", "Valid signal")}',
+                    'breakdown': self._create_breakdown(probability, sqs, final_multiplier),
+                    'tier_matched': best_match.get('description', 'Unknown'),
+                    'bonuses_applied': final_multiplier > best_match['capital_multiplier'],
+                    'crypto_analyzer_tier': tier
+                }
+
+                logger.info(f"✅ {self.user_id} - TIER {tier} approved: {symbol} prob={probability}% sqs={sqs:.1f}")
+                self._print_decision(probability, sqs, result, rr_ratio, tier)
+                return result
+            else:
+                # Tier 10 = rejected by crypto-analyzer-redis
+                result = {
+                    'action': 'reject',
+                    'capital_multiplier': 0.0,
+                    'quality_grade': 'REJECTED',
+                    'frequency_class': 'FILTERED_OUT',
+                    'reason': f'Rejected by crypto-analyzer TIER {tier} (below minimums)',
+                    'breakdown': self._create_breakdown(probability, sqs, rejected=True),
+                    'crypto_analyzer_tier': tier
+                }
+
+                logger.warning(f"🚫 {self.user_id} - TIER {tier} rejected: {symbol} prob={probability}% sqs={sqs:.1f}")
+                self._print_decision(probability, sqs, result, rr_ratio, tier)
+                return result
+
+        # ═══════════════════════════════════════════════════════════════════
+        # FALLBACK: Use local validation (legacy behavior)
+        # ═══════════════════════════════════════════════════════════════════
         if not self._config or not self._config.get("enabled", False):
             result = self._default_decision(probability, sqs)
             self._print_decision(probability, sqs, result, rr_ratio)
@@ -214,13 +261,16 @@ class SQSEvaluator:
             'breakdown': self._create_breakdown(probability, sqs, 1.0)
         }
 
-    def _print_decision(self, probability: float, sqs: float, decision: Dict, rr_ratio: float = 1.0):
+    def _print_decision(self, probability: float, sqs: float, decision: Dict, rr_ratio: float = 1.0, tier: int = None):
         """Print detailed decision breakdown with colors and emojis"""
         symbol = self._current_symbol or 'TRADE'
 
         # Header
         print(f"\n{'='*80}")
         print(f"🎯 SQS TRADE EVALUATION: {symbol}")
+        if tier is not None:
+            tier_emoji = "✅" if tier <= 9 else "❌"
+            print(f"   {tier_emoji} crypto-analyzer-redis TIER: {tier}")
         print(f"{'='*80}")
 
         # Input data
@@ -259,9 +309,11 @@ class SQSEvaluator:
         print(f"{'='*80}")
         if action == 'ACCEPT':
             capital_emoji = "🚀" if multiplier >= 2.0 else "📈" if multiplier >= 1.5 else "💰"
-            print(f"{capital_emoji} SUMMARY: {prob_tier} probability + {sqs_grade} SQS → {multiplier:.1f}x capital")
+            tier_info = f" (TIER {tier})" if tier is not None else ""
+            print(f"{capital_emoji} SUMMARY: {prob_tier} probability + {sqs_grade} SQS → {multiplier:.1f}x capital{tier_info}")
         else:
-            print(f"🛑 SUMMARY: Trade rejected - insufficient quality")
+            tier_info = f" (TIER {tier})" if tier is not None else ""
+            print(f"🛑 SUMMARY: Trade rejected - insufficient quality{tier_info}")
         print(f"{'='*80}\n")
 
     def _determine_scenario_type(self, probability: float, sqs: float, multiplier: float) -> str:

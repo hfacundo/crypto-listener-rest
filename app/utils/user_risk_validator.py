@@ -96,12 +96,14 @@ class UserRiskProfileValidator:
         target_price: float,
         probability: float,
         sqs: float,
-        rr: float
+        rr: float,
+        tier: int = None
     ) -> Tuple[bool, str, Dict]:
         """
         Validación COMPLETA de un trade contra el perfil del usuario.
 
         Ejecuta todas las validaciones en orden de prioridad:
+        0. Tier Filtering (rechazar tiers demasiado agresivos para el usuario)
         1. Circuit Breaker (pausa global)
         2. Daily Loss Limits (pérdida diaria)
         3. Schedule (horarios)
@@ -111,6 +113,10 @@ class UserRiskProfileValidator:
         7. Trade Limits (max simultáneos)
         8. Portfolio Protection (correlación, exposición)
         9. SQS Evaluation (calidad de señal)
+
+        Args:
+            tier: Tier del trade (1-10) desde crypto-analyzer-redis
+                  Si tier_config está habilitado, se valida contra max_tier_accepted
 
         Returns:
             Tuple[bool, str, Dict]:
@@ -125,6 +131,22 @@ class UserRiskProfileValidator:
             "symbol": symbol,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+
+        # ═══════════════════════════════════════════════════════════════
+        # VALIDACIÓN 0: Tier Filtering (rechazar si tier fuera de rango)
+        # ═══════════════════════════════════════════════════════════════
+        if tier is not None and self.rules.get("tier_config", {}).get("enabled", False):
+            tier_config = self.rules["tier_config"]
+            max_tier_accepted = tier_config.get("max_tier_accepted", 10)
+
+            if tier > max_tier_accepted:
+                validation_results["failed_at"] = "tier_filtering"
+                validation_results["tier_config"] = tier_config
+                validation_results["tier_received"] = tier
+
+                logger.warning(f"🎯 {self.user_id} - TIER REJECTED: tier {tier} > max_tier_accepted {max_tier_accepted}")
+
+                return False, f"TIER_REJECTED: tier {tier} exceeds max_tier_accepted {max_tier_accepted} (too aggressive for this user)", validation_results
 
         # ═══════════════════════════════════════════════════════════════
         # VALIDACIÓN 1: Circuit Breaker (máxima prioridad)
@@ -256,7 +278,8 @@ class UserRiskProfileValidator:
         from app.utils.sqs_evaluator import SQSEvaluator
 
         sqs_evaluator = SQSEvaluator(self.user_id, self.strategy)
-        sqs_decision = sqs_evaluator.evaluate_trade(probability, sqs, rr, symbol)
+        # Pass tier from crypto-analyzer-redis (if provided) for synchronized validation
+        sqs_decision = sqs_evaluator.evaluate_trade(probability, sqs, rr, symbol, tier=tier)
 
         if sqs_decision['action'] == 'reject':
             validation_results["failed_at"] = "sqs_evaluation"
