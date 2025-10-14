@@ -21,6 +21,18 @@ def execute_guardian_action_for_user(user_id: str, symbol: str, action: str,
     Ejecuta acción de guardian para un usuario específico
     """
     try:
+        # CRITICAL FIX: Crear event loop en threads para evitar asyncio errors
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            # No hay event loop en este thread, crear uno nuevo
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         client = get_binance_client_for_user(user_id)
         rules = get_rules(user_id, "archer_dual")  # Estrategia default
 
@@ -104,6 +116,15 @@ def execute_guardian_action_for_user(user_id: str, symbol: str, action: str,
             "timestamp": time.time(),
             "reason": f"exception_{str(e)}"
         }
+    finally:
+        # Cleanup event loop para evitar memory leaks en threads
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop and not loop.is_running():
+                loop.close()
+        except:
+            pass  # Ignorar errores de cleanup
 
 
 def execute_close_parallel(users: List[str], symbol: str, message: Dict[str, Any]) -> List[Dict[str, Any]]:
