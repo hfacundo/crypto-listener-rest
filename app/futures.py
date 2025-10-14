@@ -51,7 +51,7 @@ from app.utils.db.query_executor import save_trade
 from app.utils.binance.utils import adjust_price_to_tick
 # from app.utils.message_sns import send_message  # Removed: PostgreSQL/Redis handle state, SNS not needed
 
-def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules, client, user_id, capital_to_risk=None):
+def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules, client, user_id, capital_to_risk=None, leverage_override=None):
     #1. Obtener y validar filtros de Binance (LOT_SIZE, PRICE_FILTER, etc.)
     filters = get_symbol_filters(symbol, client)
     print(f"{symbol} filters:", filters)
@@ -129,8 +129,12 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
         print(f"❌ SL o TP fuera de rango permitido para {symbol}")
         return {"success": False, "error": "Invalid SL or TP price"}
 
-    # 10. Ajustar leverage según reglas
-    success, applied_leverage = set_leverage(symbol, rules.get(MAX_LEVERAGE, DEFAULT_MAX_LEVERAGE), client, user_id)
+    # 10. Ajustar leverage según reglas (o usar override de test mode)
+    desired_leverage = leverage_override if leverage_override else rules.get(MAX_LEVERAGE, DEFAULT_MAX_LEVERAGE)
+    if leverage_override:
+        print(f"🧪 Using test leverage override: {leverage_override}x for {symbol} ({user_id})")
+
+    success, applied_leverage = set_leverage(symbol, desired_leverage, client, user_id)
     if not success:
         print(f"❌ No se pudo establecer apalancamiento para {symbol} ({user_id})")
         return {"success": False, "error": "Failed to set leverage"}
@@ -167,7 +171,7 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
     }
 
 
-def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules, client, user_id, strategy, signal_quality_score=0, capital_multiplier=1.0):
+def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules, client, user_id, strategy, signal_quality_score=0, capital_multiplier=1.0, leverage_override=None):
     """
     Crea una orden de trading segura con stop loss y take profit.
     Valida todos los parámetros y ajusta según las reglas dinámicas.
@@ -200,8 +204,12 @@ def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, pr
     base_capital = calculate_risk_capital(rules, client)
     capital_to_risk = base_capital * capital_multiplier
 
-    # 4. Crear la orden con capital ajustado por SQS
-    order_result = create_order(symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules, client, user_id, capital_to_risk)
+    # 🧪 TEST MODE: Pasar leverage override si existe
+    if leverage_override:
+        print(f"🧪 Test mode: Using leverage override {leverage_override}x (user: {user_id})")
+
+    # 4. Crear la orden con capital ajustado por SQS y leverage override (si existe)
+    order_result = create_order(symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules, client, user_id, capital_to_risk, leverage_override)
     
     if order_result is None or not order_result.get("success") or "order_id" not in order_result:
         print(f"⚠️ Orden fallida, no se guardará: {order_result} para {symbol}")

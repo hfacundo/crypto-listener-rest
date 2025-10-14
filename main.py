@@ -154,9 +154,10 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         # 🧪 TEST MODE: Detectar si es un trade de prueba
         is_test = message.get("is_test", False)
         test_user = message.get("test_user", None)
+        test_leverage = message.get("test_leverage", None)  # Leverage específico para test
 
         tier_info = f" TIER {tier}" if tier else ""
-        test_info = " 🧪 TEST MODE" if is_test else ""
+        test_info = f" 🧪 TEST MODE (LEV {test_leverage}x)" if is_test and test_leverage else (" 🧪 TEST MODE" if is_test else "")
         print(f"{log_prefix} {symbol} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}{tier_info}{test_info}")
 
         # 🧪 TEST MODE: Si es test, solo procesar para el test_user
@@ -230,10 +231,13 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         client = get_binance_client_for_user(user_id)
         print(f"{log_prefix} Seteando binance client")
 
+        # 🧪 TEST MODE: Preparar leverage específico para test
+        leverage_override = test_leverage if (is_test and test_user == user_id and test_leverage) else None
+
         order = create_trade(
             symbol, entry_price, stop_loss, target_price, direction,
             rr, probability, rules, client, user_id, strategy,
-            signal_quality_score, capital_multiplier
+            signal_quality_score, capital_multiplier, leverage_override
         )
 
         if order is not None and order.get("success"):
@@ -270,7 +274,8 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
                                 "symbol": symbol.upper(),
                                 "side": direction.upper(),
                                 "entry": entry_price,
-                                "stop": stop_loss,
+                                "stop": stop_loss,           # Para trailing_stop.py y guardian_service.py
+                                "stop_loss": stop_loss,      # Para light_check.py y decisions.py (compatibilidad)
                                 "target": target_price,
                                 "user_id": user_id,
                                 "strategy": strategy,
