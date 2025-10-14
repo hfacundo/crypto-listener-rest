@@ -11,17 +11,17 @@
 SELECT
     user_id,
     strategy,
-    rules->'tier_config' as current_tier_config
-FROM rules
+    rules_config->'tier_config' as current_tier_config
+FROM user_rules
 WHERE strategy = 'archer_dual'
 ORDER BY user_id;
 
 -- =====================================================================
 -- HUFSA - Agresivo (acepta tier 1-9)
 -- =====================================================================
-UPDATE rules
-SET rules = jsonb_set(
-    rules::jsonb,
+UPDATE user_rules
+SET rules_config = jsonb_set(
+    rules_config,
     '{tier_config}',
     '{
       "enabled": true,
@@ -34,9 +34,9 @@ WHERE user_id = 'hufsa' AND strategy = 'archer_dual';
 -- =====================================================================
 -- FUTURES - Agresivo (acepta tier 1-9)
 -- =====================================================================
-UPDATE rules
-SET rules = jsonb_set(
-    rules::jsonb,
+UPDATE user_rules
+SET rules_config = jsonb_set(
+    rules_config,
     '{tier_config}',
     '{
       "enabled": true,
@@ -49,9 +49,9 @@ WHERE user_id = 'futures' AND strategy = 'archer_dual';
 -- =====================================================================
 -- COPY_TRADING - Conservador (acepta tier 1-7)
 -- =====================================================================
-UPDATE rules
-SET rules = jsonb_set(
-    rules::jsonb,
+UPDATE user_rules
+SET rules_config = jsonb_set(
+    rules_config,
     '{tier_config}',
     '{
       "enabled": true,
@@ -64,9 +64,9 @@ WHERE user_id = 'copy_trading' AND strategy = 'archer_dual';
 -- =====================================================================
 -- COPY_2 - Conservador (acepta tier 1-7)
 -- =====================================================================
-UPDATE rules
-SET rules = jsonb_set(
-    rules::jsonb,
+UPDATE user_rules
+SET rules_config = jsonb_set(
+    rules_config,
     '{tier_config}',
     '{
       "enabled": true,
@@ -82,16 +82,16 @@ WHERE user_id = 'copy_2' AND strategy = 'archer_dual';
 SELECT
     user_id,
     strategy,
-    rules->'tier_config'->>'enabled' as tier_filtering_enabled,
-    rules->'tier_config'->>'max_tier_accepted' as max_tier,
-    rules->'tier_config'->>'description' as description
-FROM rules
+    rules_config->'tier_config'->>'enabled' as tier_filtering_enabled,
+    rules_config->'tier_config'->>'max_tier_accepted' as max_tier,
+    rules_config->'tier_config'->>'description' as description
+FROM user_rules
 WHERE strategy = 'archer_dual'
 ORDER BY user_id;
 
 -- =====================================================================
 -- ROLLBACK (Si necesitas revertir cambios)
 -- =====================================================================
--- UPDATE rules
--- SET rules = rules::jsonb - 'tier_config'
+-- UPDATE user_rules
+-- SET rules_config = rules_config - 'tier_config'
 -- WHERE strategy = 'archer_dual';
