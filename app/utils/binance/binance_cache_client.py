@@ -55,10 +55,13 @@ class BinanceCacheClient:
         try:
             cache_key = f"{self.cache_prefix}:mark_price:{symbol.lower()}"
 
+            logger.warning(f"🔍 DEBUG: Buscando mark price en Redis key: '{cache_key}'")
+
             # Intentar obtener desde cache
             cached_data = self.redis_client.get(cache_key)
 
             if cached_data:
+                logger.warning(f"🔍 DEBUG: Mark price encontrado en Redis para '{symbol}': {cached_data[:100]}...")
                 data = json.loads(cached_data)
 
                 # Verificar age
@@ -66,10 +69,13 @@ class BinanceCacheClient:
 
                 if age <= max_age:
                     self.stats['cache_hits'] += 1
-                    logger.debug(f"✅ Mark price cache HIT: {symbol} (age: {age:.1f}s)")
+                    logger.warning(f"✅ DEBUG: Mark price cache HIT: {symbol} (age: {age:.1f}s, price: {data['mark_price']})")
                     return float(data['mark_price'])
                 else:
-                    logger.debug(f"⚠️ Mark price cache STALE: {symbol} (age: {age:.1f}s)")
+                    logger.warning(f"⚠️ DEBUG: Mark price cache STALE: {symbol} (age: {age:.1f}s > max_age: {max_age}s)")
+
+            else:
+                logger.error(f"❌ DEBUG: Mark price NO encontrado en Redis key: '{cache_key}'")
 
             # Cache miss o stale - hacer fallback a API si tenemos client
             self.stats['cache_misses'] += 1
@@ -78,6 +84,7 @@ class BinanceCacheClient:
                 logger.warning(f"⚠️ Mark price cache MISS: {symbol} - fallback to API")
                 self.stats['fallback_api_calls'] += 1
                 mark_data = client.futures_mark_price(symbol=symbol.upper())
+                logger.warning(f"🔍 DEBUG: Mark price desde API: {mark_data['markPrice']}")
                 return float(mark_data["markPrice"])
             else:
                 logger.error(f"❌ Mark price cache MISS: {symbol} - no client for fallback")
@@ -114,10 +121,13 @@ class BinanceCacheClient:
         try:
             cache_key = f"{self.cache_prefix}:orderbook:{symbol.lower()}:{depth_limit}"
 
+            logger.warning(f"🔍 DEBUG: Buscando orderbook en Redis key: '{cache_key}'")
+
             # Intentar obtener desde cache
             cached_data = self.redis_client.get(cache_key)
 
             if cached_data:
+                logger.warning(f"🔍 DEBUG: Orderbook encontrado en Redis para '{symbol}': {len(cached_data)} bytes")
                 data = json.loads(cached_data)
 
                 # Verificar age
@@ -125,10 +135,14 @@ class BinanceCacheClient:
 
                 if age <= max_age:
                     self.stats['cache_hits'] += 1
-                    logger.debug(f"✅ Orderbook cache HIT: {symbol} (age: {age:.1f}s)")
-                    return data['orderbook_data']
+                    orderbook = data['orderbook_data']
+                    logger.warning(f"✅ DEBUG: Orderbook cache HIT: {symbol} (age: {age:.1f}s, bids: {len(orderbook.get('bids', []))}, asks: {len(orderbook.get('asks', []))})")
+                    return orderbook
                 else:
-                    logger.debug(f"⚠️ Orderbook cache STALE: {symbol} (age: {age:.1f}s)")
+                    logger.warning(f"⚠️ DEBUG: Orderbook cache STALE: {symbol} (age: {age:.1f}s > max_age: {max_age}s)")
+
+            else:
+                logger.error(f"❌ DEBUG: Orderbook NO encontrado en Redis key: '{cache_key}'")
 
             # Cache miss o stale - hacer fallback a API si tenemos client
             self.stats['cache_misses'] += 1
@@ -137,6 +151,8 @@ class BinanceCacheClient:
                 logger.warning(f"⚠️ Orderbook cache MISS: {symbol} - fallback to API")
                 self.stats['fallback_api_calls'] += 1
                 order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
+
+                logger.warning(f"🔍 DEBUG: Orderbook desde API: bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
 
                 # Retornar raw orderbook (el llamador procesará según necesite)
                 return {
@@ -181,10 +197,16 @@ class BinanceCacheClient:
             # Usar Redis Streams (XRANGE) en lugar de keys regulares
             stream_key = f"candles:{symbol.lower()}:{interval}"
 
+            logger.warning(f"🔍 DEBUG: Intentando leer Redis stream key: '{stream_key}'")
+
             # Leer últimos 'limit' elementos del stream
             entries = self.redis_client.xrevrange(stream_key, max="+", min="-", count=limit)
 
+            logger.warning(f"🔍 DEBUG: Redis XREVRANGE returned {len(entries) if entries else 0} entries for '{stream_key}'")
+
             if entries:
+                logger.warning(f"🔍 DEBUG: Primera entry en stream '{stream_key}': id={entries[0][0]}, fields={list(entries[0][1].keys())}")
+
                 klines = []
                 # Convertir formato de stream a formato de klines
                 for entry_id, fields in reversed(entries):  # Invertir para orden cronológico
@@ -209,25 +231,42 @@ class BinanceCacheClient:
                                 "0"                                      # 11: Ignore
                             ]
                             klines.append(kline)
+                        else:
+                            missing_fields = [k for k in [b"o", b"h", b"l", b"c", b"v"] if k not in fields]
+                            logger.error(f"❌ DEBUG: Entry en '{stream_key}' falta campos: {missing_fields}, tiene: {list(fields.keys())}")
                     except Exception as parse_error:
-                        logger.debug(f"Error parsing stream entry for {symbol}: {parse_error}")
+                        logger.error(f"❌ DEBUG: Error parsing stream entry for {symbol}: {parse_error}")
                         continue
 
                 if klines:
                     self.stats['cache_hits'] += 1
-                    logger.debug(f"✅ Klines cache HIT: {symbol} {interval} ({len(klines)} candles from stream)")
+                    logger.warning(f"✅ DEBUG: Klines cache HIT: {symbol} {interval} ({len(klines)} candles from stream)")
+                    logger.warning(f"🔍 DEBUG: Primera kline parseada: timestamp={klines[0][0]}, close={klines[0][4]}, volume={klines[0][5]}")
                     return klines
                 else:
                     self.stats['cache_misses'] += 1
-                    logger.warning(f"⚠️ Klines cache MISS: {symbol} {interval} (stream empty or invalid)")
+                    logger.error(f"❌ DEBUG: Klines cache MISS: {symbol} {interval} - stream tiene {len(entries)} entries pero ninguna válida")
                     return None
             else:
                 self.stats['cache_misses'] += 1
-                logger.warning(f"⚠️ Klines cache MISS: {symbol} {interval} (stream not found)")
+                logger.error(f"❌ DEBUG: Klines cache MISS: {symbol} {interval} - stream '{stream_key}' vacío o no existe")
+
+                # Verificar si el key existe en Redis
+                try:
+                    key_type = self.redis_client.type(stream_key)
+                    logger.error(f"❌ DEBUG: Redis key '{stream_key}' type: {key_type}")
+                    if key_type == b'stream' or key_type == 'stream':
+                        stream_info = self.redis_client.xinfo_stream(stream_key)
+                        logger.error(f"❌ DEBUG: Stream info para '{stream_key}': length={stream_info.get('length', 0)}")
+                except Exception as info_error:
+                    logger.error(f"❌ DEBUG: Error obteniendo info de '{stream_key}': {info_error}")
+
                 return None
 
         except Exception as e:
-            logger.error(f"❌ Error getting klines from Redis stream for {symbol}: {e}")
+            logger.error(f"❌ DEBUG: Exception getting klines from Redis stream for {symbol}: {e}")
+            import traceback
+            logger.error(f"❌ DEBUG: Traceback: {traceback.format_exc()}")
             return None
 
     def get_cache_stats(self) -> Dict:
