@@ -156,7 +156,8 @@ class UserRiskProfileValidator:
 
             try:
                 breaker_active, breaker_reason = self.protection_system.should_activate_circuit_breaker(
-                    strategy_name=f"{self.user_id}_{self.strategy}",
+                    user_id=self.user_id,
+                    strategy=self.strategy,
                     max_drawdown_threshold=config.get("max_drawdown_pct", -30.0),
                     max_consecutive_losses=config.get("max_consecutive_losses", 5)
                 )
@@ -197,7 +198,8 @@ class UserRiskProfileValidator:
 
             try:
                 should_block, block_reason = self.protection_system.should_block_repetition(
-                    strategy_name=f"{self.user_id}_{self.strategy}",
+                    user_id=self.user_id,
+                    strategy=self.strategy,
                     symbol=symbol,
                     direction=direction,
                     current_price=entry_price,
@@ -220,7 +222,8 @@ class UserRiskProfileValidator:
 
             try:
                 should_block, block_reason = self.protection_system.should_block_symbol(
-                    strategy_name=f"{self.user_id}_{self.strategy}",
+                    user_id=self.user_id,
+                    strategy=self.strategy,
                     symbol=symbol,
                     min_trades=config.get("min_trades_for_evaluation", 10),
                     min_win_rate=config.get("min_win_rate_pct", 42.0),
@@ -370,13 +373,14 @@ class UserRiskProfileValidator:
                 SELECT
                     COALESCE(SUM(pnl_pct), 0) as daily_pnl
                 FROM trade_history
-                WHERE strategy_name = %s
+                WHERE user_id = %s
+                  AND strategy = %s
                   AND exit_time >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
                   AND exit_reason IN ('target_hit', 'stop_hit', 'timeout', 'manual_close')
             """
 
             with conn.cursor() as cur:
-                cur.execute(query, (f"{self.user_id}_{self.strategy}",))
+                cur.execute(query, (self.user_id, self.strategy))
                 result = cur.fetchone()
                 daily_pnl = float(result[0]) if result else 0.0
 
@@ -590,10 +594,18 @@ class UserRiskProfileValidator:
         target_price: float,
         probability: float,
         sqs: float,
-        rr: float
+        rr: float,
+        order_id: int = None,
+        sl_order_id: int = None,
+        tp_order_id: int = None
     ) -> int:
         """
         Registra un trade abierto en TradeProtectionSystem (PostgreSQL).
+
+        Args:
+            order_id: Order ID de Binance (entry)
+            sl_order_id: Order ID de Binance (stop loss)
+            tp_order_id: Order ID de Binance (take profit)
 
         Returns:
             int: trade_id de PostgreSQL
@@ -604,7 +616,8 @@ class UserRiskProfileValidator:
 
         try:
             trade_id = self.protection_system.record_trade(
-                strategy_name=f"{self.user_id}_{self.strategy}",
+                user_id=self.user_id,
+                strategy=self.strategy,
                 symbol=symbol,
                 direction=direction,
                 entry_time=entry_time,
@@ -613,7 +626,10 @@ class UserRiskProfileValidator:
                 target_price=target_price,
                 probability=probability,
                 sqs=sqs,
-                rr=rr
+                rr=rr,
+                order_id=order_id,
+                sl_order_id=sl_order_id,
+                tp_order_id=tp_order_id
             )
 
             logger.info(f"✅ {self.user_id} - Trade recorded in PostgreSQL: {symbol} (trade_id={trade_id})")

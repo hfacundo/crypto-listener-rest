@@ -77,7 +77,8 @@ class TradeProtectionSystem:
         -- Tabla de histórico de trades
         CREATE TABLE IF NOT EXISTS trade_history (
             id SERIAL PRIMARY KEY,
-            strategy_name VARCHAR(50) NOT NULL,
+            user_id VARCHAR(50) NOT NULL,
+            strategy VARCHAR(50) NOT NULL,
             symbol VARCHAR(20) NOT NULL,
             direction VARCHAR(10) NOT NULL,
             entry_time TIMESTAMP NOT NULL,
@@ -92,16 +93,41 @@ class TradeProtectionSystem:
             probability DECIMAL(5, 2),
             sqs DECIMAL(5, 2),
             rr DECIMAL(10, 2),
+            order_id BIGINT,
+            sl_order_id BIGINT,
+            tp_order_id BIGINT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE INDEX IF NOT EXISTS idx_trade_history_user_strategy
+            ON trade_history(user_id, strategy, entry_time DESC);
         CREATE INDEX IF NOT EXISTS idx_trade_history_symbol_direction
             ON trade_history(symbol, direction, entry_time DESC);
-        CREATE INDEX IF NOT EXISTS idx_trade_history_strategy
-            ON trade_history(strategy_name, entry_time DESC);
         CREATE INDEX IF NOT EXISTS idx_trade_history_exit_reason
             ON trade_history(exit_reason);
+        CREATE INDEX IF NOT EXISTS idx_trade_history_order_id
+            ON trade_history(order_id);
+
+        -- Migración de datos antiguos: separar strategy_name en user_id + strategy
+        -- Solo si existe columna strategy_name
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'trade_history' AND column_name = 'strategy_name'
+            ) THEN
+                -- Actualizar user_id y strategy desde strategy_name existente
+                UPDATE trade_history
+                SET
+                    user_id = COALESCE(user_id, SPLIT_PART(strategy_name, '_', 1)),
+                    strategy = COALESCE(strategy, REGEXP_REPLACE(strategy_name, '^[^_]+_', ''))
+                WHERE user_id IS NULL OR strategy IS NULL;
+
+                -- Eliminar columna strategy_name después de migrar
+                ALTER TABLE trade_history DROP COLUMN IF EXISTS strategy_name;
+            END IF;
+        END $$;
 
         -- Tabla de estado de estrategia (para circuit breaker)
         CREATE TABLE IF NOT EXISTS strategy_state (
@@ -146,7 +172,8 @@ class TradeProtectionSystem:
 
     def should_block_repetition(
         self,
-        strategy_name: str,
+        user_id: str,
+        strategy: str,
         symbol: str,
         direction: str,
         current_price: float,
@@ -158,6 +185,10 @@ class TradeProtectionSystem:
         1. Mismo símbolo+dirección falló recientemente (últimas 48h)
         2. Precio no ha cambiado significativamente (>2%)
 
+        Args:
+            user_id: ID del usuario
+            strategy: Nombre de la estrategia
+
         Returns:
             (should_block, reason)
         """
@@ -168,7 +199,8 @@ class TradeProtectionSystem:
             pnl_pct,
             exit_reason
         FROM trade_history
-        WHERE strategy_name = %s
+        WHERE user_id = %s
+          AND strategy = %s
           AND symbol = %s
           AND direction = %s
           AND exit_reason = 'stop_hit'
@@ -180,7 +212,7 @@ class TradeProtectionSystem:
         conn = self._get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                cur.execute(query, (strategy_name, symbol, direction, lookback_hours))
+                cur.execute(query, (user_id, strategy, symbol, direction, lookback_hours))
                 failed_trade = cur.fetchone()
 
                 if not failed_trade:
@@ -213,7 +245,8 @@ class TradeProtectionSystem:
 
     def record_trade(
         self,
-        strategy_name: str,
+        user_id: str,
+        strategy: str,
         symbol: str,
         direction: str,
         entry_time: datetime,
@@ -222,17 +255,39 @@ class TradeProtectionSystem:
         target_price: float,
         probability: float,
         sqs: float,
-        rr: float
+        rr: float,
+        order_id: int = None,
+        sl_order_id: int = None,
+        tp_order_id: int = None
     ) -> int:
         """
         Registra un nuevo trade en estado 'active'.
-        Retorna trade_id para posterior actualización.
+
+        Args:
+            user_id: ID del usuario (ej: "hufsa", "copy_trading")
+            strategy: Nombre de la estrategia (ej: "archer_dual")
+            symbol: Símbolo del trade (ej: "BTCUSDT")
+            direction: Dirección (ej: "BUY", "SELL")
+            entry_time: Timestamp de entrada
+            entry_price: Precio de entrada
+            stop_price: Precio de stop loss
+            target_price: Precio de take profit
+            probability: Probabilidad de éxito (0-100)
+            sqs: Signal Quality Score (0-100)
+            rr: Risk/Reward ratio
+            order_id: Order ID de Binance (entry)
+            sl_order_id: Order ID de Binance (stop loss)
+            tp_order_id: Order ID de Binance (take profit)
+
+        Returns:
+            int: trade_id para posterior actualización
         """
         query = """
         INSERT INTO trade_history (
-            strategy_name, symbol, direction, entry_time, entry_price,
-            stop_price, target_price, probability, sqs, rr, exit_reason
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+            user_id, strategy, symbol, direction, entry_time, entry_price,
+            stop_price, target_price, probability, sqs, rr, exit_reason,
+            order_id, sl_order_id, tp_order_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s, %s, %s)
         RETURNING id
         """
 
@@ -240,8 +295,9 @@ class TradeProtectionSystem:
         try:
             with conn.cursor() as cur:
                 cur.execute(query, (
-                    strategy_name, symbol, direction, entry_time, entry_price,
-                    stop_price, target_price, probability, sqs, rr
+                    user_id, strategy, symbol, direction, entry_time, entry_price,
+                    stop_price, target_price, probability, sqs, rr,
+                    order_id, sl_order_id, tp_order_id
                 ))
                 trade_id = cur.fetchone()[0]
             conn.commit()
@@ -255,7 +311,8 @@ class TradeProtectionSystem:
 
     def update_trade_exit(
         self,
-        strategy_key: str,
+        user_id: str,
+        strategy: str,
         trade_id: int,
         exit_price: float,
         exit_reason: str,  # 'stop_loss', 'take_profit', 'guardian_close', 'half_close', 'manual'
@@ -267,7 +324,8 @@ class TradeProtectionSystem:
         Además actualiza strategy_state con el resultado.
 
         Args:
-            strategy_key: Strategy name (ej: "hufsa_archer_dual")
+            user_id: ID del usuario (ej: "hufsa")
+            strategy: Nombre de la estrategia (ej: "archer_dual")
             trade_id: ID del trade a actualizar
             exit_price: Precio de salida
             exit_reason: Razón del cierre
@@ -282,7 +340,7 @@ class TradeProtectionSystem:
 
         # Primero obtener entry_price para calcular pnl_pct
         query_get_entry = """
-        SELECT entry_price, strategy_name FROM trade_history WHERE id = %s
+        SELECT entry_price, user_id, strategy FROM trade_history WHERE id = %s
         """
 
         query_update = """
@@ -294,7 +352,7 @@ class TradeProtectionSystem:
             pnl_usdt = %s,
             updated_at = NOW()
         WHERE id = %s
-        RETURNING strategy_name
+        RETURNING user_id, strategy
         """
 
         conn = self._get_conn()
@@ -308,7 +366,8 @@ class TradeProtectionSystem:
                     return False
 
                 entry_price = float(result[0])
-                strategy_name = result[1]
+                db_user_id = result[1]
+                db_strategy = result[2]
 
                 # Calculate pnl_pct
                 pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
@@ -319,7 +378,8 @@ class TradeProtectionSystem:
                     exit_time, exit_price, exit_reason, pnl_pct, pnl_usdt, trade_id
                 ))
 
-                # Update strategy state
+                # Update strategy state (legacy - usa strategy_name concatenado)
+                strategy_name = f"{db_user_id}_{db_strategy}"
                 self._update_strategy_state(cur, strategy_name, pnl_pct, exit_time)
 
             conn.commit()
@@ -408,7 +468,8 @@ class TradeProtectionSystem:
 
     def should_activate_circuit_breaker(
         self,
-        strategy_name: str,
+        user_id: str,
+        strategy: str,
         max_drawdown_threshold: float = -30.0,  # -30%
         max_consecutive_losses: int = 5
     ) -> Tuple[bool, Optional[str]]:
@@ -417,9 +478,16 @@ class TradeProtectionSystem:
         1. Drawdown actual > threshold (-30%)
         2. Consecutivas pérdidas > threshold (5)
 
+        Args:
+            user_id: ID del usuario
+            strategy: Nombre de la estrategia
+
         Returns:
             (should_block, reason)
         """
+        # Para mantener compatibilidad con strategy_state existente (legacy)
+        strategy_name = f"{user_id}_{strategy}"
+
         query = """
         SELECT
             current_drawdown_pct,
@@ -515,12 +583,19 @@ class TradeProtectionSystem:
 
     def get_symbol_stats(
         self,
-        strategy_name: str,
+        user_id: str,
+        strategy: str,
         symbol: str,
         lookback_days: int = 30
     ) -> Dict:
         """
         Obtiene estadísticas recientes de un símbolo.
+
+        Args:
+            user_id: ID del usuario
+            strategy: Nombre de la estrategia
+            symbol: Símbolo del trade
+            lookback_days: Días hacia atrás para análisis
 
         Returns dict con:
         - trades: Número de trades
@@ -537,7 +612,8 @@ class TradeProtectionSystem:
             AVG(pnl_pct) as avg_pnl,
             MAX(entry_time) as last_trade
         FROM trade_history
-        WHERE strategy_name = %s
+        WHERE user_id = %s
+          AND strategy = %s
           AND symbol = %s
           AND exit_reason IN ('target_hit', 'stop_hit', 'timeout')
           AND entry_time > NOW() - INTERVAL '%s days'
@@ -546,7 +622,7 @@ class TradeProtectionSystem:
         conn = self._get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                cur.execute(query, (strategy_name, symbol, lookback_days))
+                cur.execute(query, (user_id, strategy, symbol, lookback_days))
                 result = cur.fetchone()
 
                 if not result or result['total_trades'] == 0:
@@ -594,7 +670,8 @@ class TradeProtectionSystem:
 
     def should_block_symbol(
         self,
-        strategy_name: str,
+        user_id: str,
+        strategy: str,
         symbol: str,
         min_trades: int = 10,
         min_win_rate: float = 42.0,
@@ -605,10 +682,15 @@ class TradeProtectionSystem:
         1. Tiene suficientes trades (>=10) Y
         2. Win rate muy bajo (<42%) O PnL muy negativo (<-15%)
 
+        Args:
+            user_id: ID del usuario
+            strategy: Nombre de la estrategia
+            symbol: Símbolo del trade
+
         Returns:
             (should_block, reason)
         """
-        stats = self.get_symbol_stats(strategy_name, symbol, lookback_days=60)
+        stats = self.get_symbol_stats(user_id, strategy, symbol, lookback_days=60)
 
         if stats['status'] == 'new':
             return False, None  # Dar oportunidad
@@ -672,8 +754,15 @@ class TradeProtectionSystem:
         finally:
             conn.close()
 
-    def get_symbol_performance_report(self, strategy_name: str, top_n: int = 10) -> str:
-        """Genera reporte de mejores/peores símbolos"""
+    def get_symbol_performance_report(self, user_id: str, strategy: str, top_n: int = 10) -> str:
+        """
+        Genera reporte de mejores/peores símbolos.
+
+        Args:
+            user_id: ID del usuario
+            strategy: Nombre de la estrategia
+            top_n: Número de símbolos a mostrar
+        """
         query = """
         SELECT
             symbol,
@@ -682,7 +771,8 @@ class TradeProtectionSystem:
             SUM(pnl_pct) as cumulative_pnl,
             AVG(pnl_pct) as avg_pnl
         FROM trade_history
-        WHERE strategy_name = %s
+        WHERE user_id = %s
+          AND strategy = %s
           AND exit_reason IN ('target_hit', 'stop_hit', 'timeout')
           AND entry_time > NOW() - INTERVAL '60 days'
         GROUP BY symbol
@@ -693,7 +783,7 @@ class TradeProtectionSystem:
         conn = self._get_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute(query, (strategy_name,))
+                cur.execute(query, (user_id, strategy))
                 results = cur.fetchall()
 
                 if not results:
