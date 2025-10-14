@@ -151,8 +151,18 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         signal_quality_score = message.get("signal_quality_score", 0)
         tier = message.get("tier")  # ✨ NEW: Extract tier from crypto-analyzer-redis
 
+        # 🧪 TEST MODE: Detectar si es un trade de prueba
+        is_test = message.get("is_test", False)
+        test_user = message.get("test_user", None)
+
         tier_info = f" TIER {tier}" if tier else ""
-        print(f"{log_prefix} {symbol} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}{tier_info}")
+        test_info = " 🧪 TEST MODE" if is_test else ""
+        print(f"{log_prefix} {symbol} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}{tier_info}{test_info}")
+
+        # 🧪 TEST MODE: Si es test, solo procesar para el test_user
+        if is_test and test_user and user_id != test_user:
+            print(f"{log_prefix} 🧪 TEST MODE: Skipping user (test_user={test_user})")
+            return {"user_id": user_id, "success": False, "reason": "test_mode_skip"}
 
         # BANNED SYMBOLS VALIDATION
         if is_symbol_banned(user_id, strategy, symbol):
@@ -201,8 +211,15 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         # Obtener capital_multiplier del SQS
         capital_multiplier = validation_data.get("capital_multiplier", 1.0)
         sqs_grade = validation_data.get("sqs_grade", "N/A")
+
+        # 🧪 TEST MODE: Override capital multiplier para usuario específico
+        if is_test and test_user == user_id:
+            original_multiplier = capital_multiplier
+            capital_multiplier = 0.001  # 0.1% del capital normal
+            print(f"{log_prefix} 🧪 TEST MODE: Capital multiplier overridden: {original_multiplier:.3f}x → {capital_multiplier:.3f}x (0.1%)")
+
         print(f"{log_prefix} ALL VALIDATIONS PASSED")
-        print(f"{log_prefix} Capital multiplier: {capital_multiplier:.1f}x ({sqs_grade})")
+        print(f"{log_prefix} Capital multiplier: {capital_multiplier:.3f}x ({sqs_grade})")
 
         # Log remaining slots if limits are configured
         if validation_data.get("max_allowed", 999) < 999:

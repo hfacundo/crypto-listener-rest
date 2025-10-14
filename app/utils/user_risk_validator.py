@@ -64,7 +64,7 @@ class UserRiskProfileValidator:
 
         # Redis client para caching
         try:
-            from app.utils.config.settings import get_redis_client
+            from app.utils.db.redis_client import get_redis_client
             self.redis_client = get_redis_client()
         except Exception as e:
             logger.warning(f"Could not get Redis client: {e}")

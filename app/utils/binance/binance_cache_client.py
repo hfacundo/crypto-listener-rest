@@ -177,29 +177,57 @@ class BinanceCacheClient:
             Lista de klines o None
         """
         try:
-            # crypto-data-redis guarda klines con este formato de key
-            cache_key = f"klines:{interval}:{symbol.upper()}"
+            # crypto-data-redis guarda candles con formato: candles:symbol:interval
+            # Usar Redis Streams (XRANGE) en lugar de keys regulares
+            stream_key = f"candles:{symbol.lower()}:{interval}"
 
-            cached_data = self.redis_client.get(cache_key)
+            # Leer últimos 'limit' elementos del stream
+            entries = self.redis_client.xrevrange(stream_key, max="+", min="-", count=limit)
 
-            if cached_data:
-                klines = json.loads(cached_data)
+            if entries:
+                klines = []
+                # Convertir formato de stream a formato de klines
+                for entry_id, fields in reversed(entries):  # Invertir para orden cronológico
+                    try:
+                        timestamp_ms = int(entry_id.decode().split('-')[0])
 
-                # Tomar solo los últimos 'limit' elementos
-                if isinstance(klines, list):
+                        # Validar campos requeridos
+                        if all(key in fields for key in [b"o", b"h", b"l", b"c", b"v"]):
+                            # Formato compatible con Binance klines API
+                            kline = [
+                                timestamp_ms,                           # 0: Open time
+                                fields[b"o"].decode(),                  # 1: Open
+                                fields[b"h"].decode(),                  # 2: High
+                                fields[b"l"].decode(),                  # 3: Low
+                                fields[b"c"].decode(),                  # 4: Close
+                                fields[b"v"].decode(),                  # 5: Volume
+                                timestamp_ms + 60000,                   # 6: Close time (aprox)
+                                fields[b"v"].decode(),                  # 7: Quote asset volume (mismo que volume)
+                                0,                                       # 8: Number of trades
+                                fields[b"v"].decode(),                  # 9: Taker buy base volume
+                                fields[b"v"].decode(),                  # 10: Taker buy quote volume
+                                "0"                                      # 11: Ignore
+                            ]
+                            klines.append(kline)
+                    except Exception as parse_error:
+                        logger.debug(f"Error parsing stream entry for {symbol}: {parse_error}")
+                        continue
+
+                if klines:
                     self.stats['cache_hits'] += 1
-                    logger.debug(f"✅ Klines cache HIT: {symbol} {interval} ({len(klines)} candles)")
-                    return klines[-limit:] if len(klines) > limit else klines
+                    logger.debug(f"✅ Klines cache HIT: {symbol} {interval} ({len(klines)} candles from stream)")
+                    return klines
                 else:
-                    logger.warning(f"⚠️ Klines cache data invalid format: {symbol}")
+                    self.stats['cache_misses'] += 1
+                    logger.warning(f"⚠️ Klines cache MISS: {symbol} {interval} (stream empty or invalid)")
                     return None
             else:
                 self.stats['cache_misses'] += 1
-                logger.warning(f"⚠️ Klines cache MISS: {symbol} {interval}")
+                logger.warning(f"⚠️ Klines cache MISS: {symbol} {interval} (stream not found)")
                 return None
 
         except Exception as e:
-            logger.error(f"❌ Error getting klines from Redis for {symbol}: {e}")
+            logger.error(f"❌ Error getting klines from Redis stream for {symbol}: {e}")
             return None
 
     def get_cache_stats(self) -> Dict:
