@@ -23,9 +23,11 @@ class BinanceCacheClient:
             redis_client: Instancia de ResilientRedisClient
         """
         self.redis_client = redis_client
-        self.cache_prefix = "binance_cache"
+        # Prefix para diferentes tipos de cache
+        self.websocket_prefix = "websocket"
+        self.binance_cache_prefix = "binance_cache"
 
-        # TTLs esperados (debe coincidir con crypto-analyzer-redis)
+        # TTLs esperados (debe coincidir con crypto-data-redis)
         self.ttl_config = {
             "mark_price": 30,
             "orderbook": 30,
@@ -53,7 +55,8 @@ class BinanceCacheClient:
             Mark price o None
         """
         try:
-            cache_key = f"{self.cache_prefix}:mark_price:{symbol.lower()}"
+            # crypto-data-redis usa prefix "websocket" para mark_price
+            cache_key = f"{self.websocket_prefix}:mark_price:{symbol.lower()}"
 
             logger.warning(f"🔍 DEBUG: Buscando mark price en Redis key: '{cache_key}'")
 
@@ -119,7 +122,8 @@ class BinanceCacheClient:
             Dict con orderbook data o None
         """
         try:
-            cache_key = f"{self.cache_prefix}:orderbook:{symbol.lower()}:{depth_limit}"
+            # Orderbook usa prefix "binance_cache" (solo algunos símbolos cacheados)
+            cache_key = f"{self.binance_cache_prefix}:orderbook:{symbol.lower()}:{depth_limit}"
 
             logger.warning(f"🔍 DEBUG: Buscando orderbook en Redis key: '{cache_key}'")
 
@@ -211,31 +215,65 @@ class BinanceCacheClient:
                 # Convertir formato de stream a formato de klines
                 for entry_id, fields in reversed(entries):  # Invertir para orden cronológico
                     try:
-                        timestamp_ms = int(entry_id.decode().split('-')[0])
+                        # Manejar entry_id como bytes o string
+                        if isinstance(entry_id, bytes):
+                            entry_id_str = entry_id.decode()
+                        else:
+                            entry_id_str = str(entry_id)
 
-                        # Validar campos requeridos
-                        if all(key in fields for key in [b"o", b"h", b"l", b"c", b"v"]):
-                            # Formato compatible con Binance klines API
+                        timestamp_ms = int(entry_id_str.split('-')[0])
+
+                        # Helper para obtener valores de fields (manejar bytes y strings)
+                        def get_field(field_name):
+                            # Intentar con bytes primero
+                            if isinstance(field_name, str):
+                                field_name_bytes = field_name.encode()
+                            else:
+                                field_name_bytes = field_name
+
+                            # Buscar key en formato bytes o string
+                            value = fields.get(field_name_bytes) or fields.get(field_name if isinstance(field_name, str) else field_name.decode())
+
+                            if value is None:
+                                return None
+
+                            # Retornar como string
+                            if isinstance(value, bytes):
+                                return value.decode()
+                            return str(value)
+
+                        # Validar campos requeridos (intentar ambos formatos)
+                        required_fields = ["o", "h", "l", "c", "v"]
+                        field_values = {}
+
+                        for field in required_fields:
+                            val = get_field(field)
+                            if val is None:
+                                logger.error(f"❌ DEBUG: Entry en '{stream_key}' falta campo '{field}', tiene: {list(fields.keys())}")
+                                break
+                            field_values[field] = val
+                        else:
+                            # Todos los campos encontrados, crear kline
                             kline = [
                                 timestamp_ms,                           # 0: Open time
-                                fields[b"o"].decode(),                  # 1: Open
-                                fields[b"h"].decode(),                  # 2: High
-                                fields[b"l"].decode(),                  # 3: Low
-                                fields[b"c"].decode(),                  # 4: Close
-                                fields[b"v"].decode(),                  # 5: Volume
+                                field_values["o"],                      # 1: Open
+                                field_values["h"],                      # 2: High
+                                field_values["l"],                      # 3: Low
+                                field_values["c"],                      # 4: Close
+                                field_values["v"],                      # 5: Volume
                                 timestamp_ms + 60000,                   # 6: Close time (aprox)
-                                fields[b"v"].decode(),                  # 7: Quote asset volume (mismo que volume)
+                                field_values["v"],                      # 7: Quote asset volume (mismo que volume)
                                 0,                                       # 8: Number of trades
-                                fields[b"v"].decode(),                  # 9: Taker buy base volume
-                                fields[b"v"].decode(),                  # 10: Taker buy quote volume
+                                field_values["v"],                      # 9: Taker buy base volume
+                                field_values["v"],                      # 10: Taker buy quote volume
                                 "0"                                      # 11: Ignore
                             ]
                             klines.append(kline)
-                        else:
-                            missing_fields = [k for k in [b"o", b"h", b"l", b"c", b"v"] if k not in fields]
-                            logger.error(f"❌ DEBUG: Entry en '{stream_key}' falta campos: {missing_fields}, tiene: {list(fields.keys())}")
+
                     except Exception as parse_error:
                         logger.error(f"❌ DEBUG: Error parsing stream entry for {symbol}: {parse_error}")
+                        import traceback
+                        logger.error(f"❌ DEBUG: Traceback: {traceback.format_exc()}")
                         continue
 
                 if klines:
