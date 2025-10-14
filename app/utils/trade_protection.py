@@ -790,7 +790,7 @@ class TradeProtectionSystem:
                     return "No data available"
 
                 report = f"\n{'='*70}\n"
-                report += f"SYMBOL PERFORMANCE REPORT - {strategy_name.upper()}\n"
+                report += f"SYMBOL PERFORMANCE REPORT - {user_id.upper()}/{strategy.upper()}\n"
                 report += f"{'='*70}\n\n"
 
                 # Best performers
