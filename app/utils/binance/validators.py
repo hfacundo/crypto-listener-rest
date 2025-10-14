@@ -50,8 +50,21 @@ def order_exists_for_symbol(symbol, client, user_id: str):
 #   Si el mark_price = 10,000, tu rango será:
 #   - min_price = 10,000 × (1 - 0.005) = 9950
 #   - max_price = 10,000 × (1 + 0.005) = 10,050
-def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price):
+def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, client=None):
+    """
+    Valida si el símbolo tiene suficiente liquidez en el order book.
 
+    Args:
+        symbol: Símbolo a validar
+        min_depth: Profundidad mínima requerida en USDT
+        depth_pct: Porcentaje de rango de precio para evaluar profundidad
+        order_book: Orderbook (formato Binance: {"bids": [[p,q],...], "asks": [[p,q],...]})
+        mark_price: Precio de referencia
+        client: Cliente de Binance (opcional, para fallback si orderbook inválido)
+
+    Returns:
+        bool: True si la liquidez es suficiente
+    """
     if min_depth is None:
         print("❌ Falta configuración: 'min_depth_base' en rules.")
         return False
@@ -61,33 +74,102 @@ def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price):
         return False
 
     try:
-        print(f"order_book {order_book}")
+        # Validar formato del orderbook
+        if not isinstance(order_book, dict):
+            print(f"⚠️ Orderbook inválido (no es dict): {type(order_book)}")
+            order_book = _fetch_orderbook_fallback(symbol, client)
+            if not order_book:
+                return False
+
         bids = order_book.get("bids", [])
         asks = order_book.get("asks", [])
+
+        # Validar que bids/asks sean listas y no estén vacías
+        if not isinstance(bids, list) or not isinstance(asks, list):
+            print(f"⚠️ Orderbook con formato incorrecto - bids/asks no son listas")
+            order_book = _fetch_orderbook_fallback(symbol, client)
+            if not order_book:
+                return False
+            bids = order_book.get("bids", [])
+            asks = order_book.get("asks", [])
+
+        if len(bids) == 0 or len(asks) == 0:
+            print(f"⚠️ Orderbook vacío - bids: {len(bids)}, asks: {len(asks)}")
+            order_book = _fetch_orderbook_fallback(symbol, client)
+            if not order_book:
+                return False
+            bids = order_book.get("bids", [])
+            asks = order_book.get("asks", [])
 
         # Calcular rango superior e inferior permitido
         price_min = mark_price * (1 - depth_pct)
         price_max = mark_price * (1 + depth_pct)
 
+        print(f"📊 Validando liquidez {symbol}: range [{price_min:.4f} - {price_max:.4f}], bids={len(bids)}, asks={len(asks)}")
+
         # Calcular profundidad total dentro del rango en USDT
         def depth_sum(levels):
-            return sum(float(p) * float(q) for p, q in levels if price_min <= float(p) <= price_max)
+            total = 0
+            for level in levels:
+                try:
+                    if not isinstance(level, (list, tuple)) or len(level) < 2:
+                        continue
+                    price = float(level[0])
+                    qty = float(level[1])
+                    if price_min <= price <= price_max:
+                        total += price * qty
+                except (ValueError, TypeError, IndexError):
+                    continue
+            return total
 
         bid_depth = depth_sum(bids)
         ask_depth = depth_sum(asks)
         total_depth = bid_depth + ask_depth
 
-        #print(f"📊 Profundidad BID: {bid_depth:.2f} USDT, ASK: {ask_depth:.2f} USDT, TOTAL: {total_depth:.2f} USDT")
+        print(f"📊 Profundidad BID: {bid_depth:.2f} USDT, ASK: {ask_depth:.2f} USDT, TOTAL: {total_depth:.2f} USDT")
 
         if total_depth >= min_depth:
+            print(f"✅ Liquidez suficiente: {total_depth:.2f} USDT >= {min_depth:.2f} USDT")
             return True
         else:
-            print(f"⚠️ Profundidad insuficiente: {total_depth:.2f} USDT (mínimo requerido: {min_depth})")
+            print(f"⚠️ Profundidad insuficiente: {total_depth:.2f} USDT (mínimo requerido: {min_depth:.2f} USDT)")
             return False
 
     except Exception as e:
         print(f"❌ Error al validar liquidez para {symbol}: {e}")
+        traceback.print_exc()
         return False
+
+
+def _fetch_orderbook_fallback(symbol, client):
+    """
+    Función helper para obtener orderbook directamente de Binance API como fallback.
+
+    Args:
+        symbol: Símbolo a consultar
+        client: Cliente de Binance
+
+    Returns:
+        dict: Orderbook o None si falla
+    """
+    if not client:
+        print(f"❌ No se puede hacer fallback a API - client no disponible")
+        return None
+
+    try:
+        print(f"🔄 Fallback: Obteniendo orderbook fresh desde Binance API para {symbol}")
+        order_book = client.futures_order_book(symbol=symbol.upper(), limit=100)
+
+        if order_book and "bids" in order_book and "asks" in order_book:
+            print(f"✅ Orderbook obtenido desde API - bids: {len(order_book['bids'])}, asks: {len(order_book['asks'])}")
+            return order_book
+        else:
+            print(f"❌ Orderbook desde API inválido")
+            return None
+
+    except Exception as e:
+        print(f"❌ Error en fallback API para orderbook {symbol}: {e}")
+        return None
 
 def validate_spread(symbol: str, entry_price: float, filters: dict, order_book: dict, mark_price: float) -> bool:
     book = {

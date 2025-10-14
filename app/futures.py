@@ -81,7 +81,7 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
     print(f"depth_config - min_depth {min_depth}, depth_pct {depth_pct}")
 
     # 3. Validar liquidez (profundidad mínima)
-    if not validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price):
+    if not validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, client):
         print(f"❌ Liquidez insuficiente para {symbol} ({user_id})")
         return {"success": False, "error": "Insufficient liquidity"}
 
