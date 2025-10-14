@@ -340,6 +340,82 @@ async def toggle_user(
         cursor.close()
         conn.close()
 
+@app.post("/api/users/{user_id}/close-all-trades")
+async def close_all_trades(
+    user_id: str,
+    username: str = Depends(verify_credentials)
+):
+    """Close all open trades for a specific user"""
+    try:
+        from app.utils.db.redis_client import get_redis_client
+        from app.futures import close_position_and_cancel_orders
+        from app.utils.binance.client import get_futures_client
+
+        redis_client = get_redis_client()
+        if not redis_client:
+            raise HTTPException(status_code=500, detail="Redis not available")
+
+        # Buscar todos los trades activos del usuario en Redis
+        # Pattern: guardian:trades:{user_id}:*
+        pattern = f"guardian:trades:{user_id}:*"
+        trade_keys = redis_client.keys(pattern)
+
+        if not trade_keys:
+            return {
+                "status": "success",
+                "message": f"No open trades found for {user_id}",
+                "trades_closed": 0,
+                "trades_failed": 0
+            }
+
+        # Obtener client de Binance para el usuario
+        client = get_futures_client(user_id)
+
+        trades_closed = 0
+        trades_failed = 0
+        failed_symbols = []
+
+        for key in trade_keys:
+            try:
+                # Extraer símbolo del key: guardian:trades:{user_id}:BTCUSDT
+                symbol = key.decode('utf-8').split(':')[-1]
+
+                # Cerrar posición
+                result = close_position_and_cancel_orders(
+                    symbol=symbol,
+                    client=client,
+                    user_id=user_id,
+                    strategy="archer_dual"
+                )
+
+                if result.get("success"):
+                    trades_closed += 1
+                    print(f"✅ Closed {symbol} for {user_id}")
+                else:
+                    trades_failed += 1
+                    failed_symbols.append(f"{symbol}: {result.get('error', 'Unknown')}")
+                    print(f"❌ Failed to close {symbol} for {user_id}: {result.get('error')}")
+
+            except Exception as e:
+                trades_failed += 1
+                failed_symbols.append(f"{symbol}: {str(e)}")
+                print(f"❌ Error closing {symbol} for {user_id}: {e}")
+
+        message = f"Closed {trades_closed} trades for {user_id}"
+        if trades_failed > 0:
+            message += f" ({trades_failed} failed)"
+
+        return {
+            "status": "success",
+            "message": message,
+            "trades_closed": trades_closed,
+            "trades_failed": trades_failed,
+            "failed_symbols": failed_symbols if failed_symbols else None
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error closing trades: {str(e)}")
+
 # =====================================================================
 # Endpoints - Tier Config
 # =====================================================================

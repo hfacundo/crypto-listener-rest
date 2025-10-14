@@ -42,7 +42,7 @@ PRINT_LOGS = "print_logs"
 # db constants (tables)
 TABLE_RULES = "rules"
 TABLE_CRYPTOS = "cryptos"
-TABLE_TRADES = "trades"
+TABLE_TRADES = "trade_history"
 
 # default values
 DEFAULT_CRYPTOS_PER_RUN = 3

@@ -553,6 +553,9 @@
                             onclick="toggleUser('${user.user_id}', ${!isEnabled})">
                         ${isEnabled ? '⏸️ Pause' : '▶️ Resume'}
                     </button>
+                    <button class="btn-danger btn-small" onclick="closeAllTrades('${user.user_id}')">
+                        🚫 Close All Trades
+                    </button>
                     <button class="btn-primary btn-small" onclick="openTierModal('${user.user_id}', ${user.max_tier || 7}, ${user.tier_filtering_enabled === 'true'})">
                         🎯 Tier Config
                     </button>
@@ -591,6 +594,17 @@
             const result = await apiCall(`/api/users/${userId}/toggle`, 'POST', { enabled: enable });
             if (result) {
                 showNotification(result.message, 'success');
+                loadUsers();
+            }
+        }
+
+        async function closeAllTrades(userId) {
+            if (!confirm(`⚠️ This will close ALL open trades for ${userId}. Are you sure?`)) return;
+
+            showNotification('Closing all trades...', 'success');
+            const result = await apiCall(`/api/users/${userId}/close-all-trades`, 'POST');
+            if (result) {
+                showNotification(`${result.message} (Closed: ${result.trades_closed || 0}, Failed: ${result.trades_failed || 0})`, 'success');
                 loadUsers();
             }
         }

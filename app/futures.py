@@ -230,6 +230,8 @@ def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, pr
         "quantity": order_result.get("quantity", 0),
         "capital_used": capital_risked,
         "order_id": order_result.get("order_id"),
+        "sl_order_id": order_result.get("sl_order_id"),  # NUEVO
+        "tp_order_id": order_result.get("tp_order_id"),  # NUEVO
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "target_price": target_price
@@ -287,10 +289,10 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
 
         # Actualizar en PostgreSQL (PNL ya calculado ANTES de cerrar)
         protection_system = TradeProtectionSystem()
-        strategy_key = f"{user_id}_{strategy}"
 
         success = protection_system.update_trade_exit(
-            strategy_key=strategy_key,
+            user_id=user_id,
+            strategy=strategy,
             trade_id=trade_id,
             exit_price=exit_price,
             exit_reason=exit_reason,
