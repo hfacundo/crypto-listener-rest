@@ -606,6 +606,92 @@ async def update_user_rules(
         conn.close()
 
 # =====================================================================
+# Logs Viewer
+# =====================================================================
+
+@app.get("/api/logs")
+async def get_logs(
+    service: str = "listener",
+    lines: int = 100,
+    filter: Optional[str] = None,
+    username: str = Depends(verify_credentials)
+):
+    """
+    Get recent logs from services running on EC2
+
+    Args:
+        service: Service name (listener, guardian, main)
+        lines: Number of lines to return (default 100, max 1000)
+        filter: Optional grep pattern to filter logs
+    """
+    import subprocess
+
+    # Limit lines
+    lines = min(lines, 1000)
+
+    # Map service names to log files
+    log_files = {
+        "listener": "/var/log/crypto-listener.log",
+        "guardian": "/var/log/crypto-guardian.log",
+        "main": "/var/log/crypto-main.log",
+        "systemd-listener": "journalctl -u crypto-listener -n",
+        "systemd-guardian": "journalctl -u crypto-guardian -n"
+    }
+
+    if service not in log_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid service. Available: {list(log_files.keys())}"
+        )
+
+    try:
+        log_path = log_files[service]
+
+        # Build command
+        if service.startswith("systemd-"):
+            # Use journalctl for systemd services
+            cmd = f"{log_path} {lines}"
+        else:
+            # Use tail for log files
+            if os.path.exists(log_path):
+                cmd = f"tail -n {lines} {log_path}"
+            else:
+                return {
+                    "service": service,
+                    "lines_requested": lines,
+                    "logs": [],
+                    "error": f"Log file not found: {log_path}"
+                }
+
+        # Apply filter if provided
+        if filter:
+            cmd = f"{cmd} | grep '{filter}'"
+
+        # Execute command
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        logs = result.stdout.strip().split('\n') if result.stdout else []
+
+        return {
+            "service": service,
+            "lines_requested": lines,
+            "lines_returned": len(logs),
+            "filter": filter,
+            "logs": logs
+        }
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Log retrieval timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading logs: {str(e)}")
+
+# =====================================================================
 # Health Check
 # =====================================================================
 

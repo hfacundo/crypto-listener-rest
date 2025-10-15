@@ -354,6 +354,9 @@
                 <button class="btn-success" onclick="resumeAllTrading()">
                     ▶️ RESUME ALL TRADING
                 </button>
+                <button class="btn-primary" onclick="openLogsModal()">
+                    📄 View Logs
+                </button>
             </div>
         </div>
 
@@ -416,6 +419,43 @@
             <div class="modal-footer">
                 <button class="btn-primary" onclick="saveCircuitBreaker()">Save</button>
                 <button class="btn-warning" onclick="closeModal('circuit-modal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Logs Viewer -->
+    <div id="logs-modal" class="modal">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h3>📄 Logs Viewer</h3>
+            </div>
+            <div class="form-group">
+                <label>Service</label>
+                <select id="logs-service" onchange="loadLogs()">
+                    <option value="listener">crypto-listener-rest</option>
+                    <option value="guardian">crypto-guardian</option>
+                    <option value="main">crypto-main</option>
+                    <option value="systemd-listener">systemd: crypto-listener</option>
+                    <option value="systemd-guardian">systemd: crypto-guardian</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Lines to show</label>
+                <input type="number" id="logs-lines" min="10" max="1000" value="100" onchange="loadLogs()">
+            </div>
+            <div class="form-group">
+                <label>Filter (optional grep pattern)</label>
+                <input type="text" id="logs-filter" placeholder="e.g., ERROR, BTCUSDT, user_123">
+            </div>
+            <div class="form-group">
+                <button class="btn-primary btn-small" onclick="loadLogs()">🔄 Refresh Logs</button>
+            </div>
+            <div class="form-group">
+                <label>Log Output</label>
+                <pre id="logs-output" style="background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; max-height: 500px; overflow-y: auto; font-size: 12px; font-family: 'Courier New', monospace; white-space: pre-wrap; word-wrap: break-word;">Loading logs...</pre>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-warning" onclick="closeModal('logs-modal')">Close</button>
             </div>
         </div>
     </div>
@@ -670,6 +710,49 @@
                 closeModal('circuit-modal');
                 loadUsers();
             }
+        }
+
+        // Logs viewer
+        function openLogsModal() {
+            document.getElementById('logs-modal').classList.add('active');
+            loadLogs();
+        }
+
+        async function loadLogs() {
+            const service = document.getElementById('logs-service').value;
+            const lines = document.getElementById('logs-lines').value;
+            const filter = document.getElementById('logs-filter').value;
+            const output = document.getElementById('logs-output');
+
+            output.textContent = 'Loading logs...';
+
+            let endpoint = `/api/logs?service=${service}&lines=${lines}`;
+            if (filter) {
+                endpoint += `&filter=${encodeURIComponent(filter)}`;
+            }
+
+            const data = await apiCall(endpoint);
+
+            if (!data) {
+                output.textContent = 'Error loading logs. Check if log files exist on the server.';
+                return;
+            }
+
+            if (data.error) {
+                output.textContent = `Error: ${data.error}`;
+                return;
+            }
+
+            if (!data.logs || data.logs.length === 0) {
+                output.textContent = 'No logs found.';
+                return;
+            }
+
+            // Join logs and display
+            output.textContent = data.logs.join('\n');
+
+            // Auto-scroll to bottom
+            output.scrollTop = output.scrollHeight;
         }
 
         // Modal controls

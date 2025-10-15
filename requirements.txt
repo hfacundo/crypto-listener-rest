@@ -10,3 +10,5 @@ SQLAlchemy>=2.0,<2.1
 psycopg2-binary>=2.9,<3.0
 requests>=2.0
 redis
+
+# Note: logging and RotatingFileHandler are part of Python stdlib (no install needed)

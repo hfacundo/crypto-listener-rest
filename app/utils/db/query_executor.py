@@ -186,39 +186,46 @@ def get_latest_order_id_for_symbol(symbol: str, user_id: str) -> Optional[str]:
 
 def update_trade_status(symbol: str, user_id: str, status: str) -> None:
     """
-    Actualiza el campo 'status' del trade más reciente con el symbol y user_id dados.
-    Solo actualiza si el último trade tiene status 'open'
+    Actualiza el campo 'exit_reason' del trade más reciente con el symbol y user_id dados.
+    Solo actualiza si el último trade tiene exit_reason 'active' (trade abierto)
 
     Args:
         symbol (str): Ejemplo "BTCUSDT"
         user_id (str): ID del usuario
-        status (str): "success" o "fail"
+        status (str): "success" o "fail" (se mapea a exit_reason apropiado)
     """
     symbol = symbol.lower()
+
+    # Mapear status a exit_reason
+    exit_reason_map = {
+        "success": "target_hit",
+        "fail": "stop_hit"
+    }
+    exit_reason = exit_reason_map.get(status, status)
 
     try:
         with get_engine().begin() as conn:
             result = conn.execute(text(f"""
                 UPDATE {TABLE_TRADES}
-                SET status = :status,
+                SET exit_reason = :exit_reason,
                     updated_at = NOW()
                 WHERE id = (
                     SELECT id
                     FROM {TABLE_TRADES}
                     WHERE symbol = :symbol
                     AND user_id = :user_id
-                    AND status = 'open'
+                    AND exit_reason = 'active'
                     ORDER BY created_at DESC
                     LIMIT 1
                 )
                 RETURNING id;
-            """), {"symbol": symbol, "user_id": user_id, "status": status})
+            """), {"symbol": symbol, "user_id": user_id, "exit_reason": exit_reason})
 
             updated_id = result.fetchone()
             if updated_id:
-                print(f"🔄 Estado del trade actualizado a '{status}' para {symbol} ({user_id})")
+                print(f"🔄 Estado del trade actualizado a '{exit_reason}' para {symbol} ({user_id})")
             else:
-                print(f"⚠️ No se encontró trade para actualizar con {symbol} ({user_id})")
+                print(f"⚠️ No se encontró trade activo para actualizar con {symbol} ({user_id})")
 
     except Exception as e:
         print(f"❌ Error al actualizar estado del trade para {symbol} ({user_id}): {e}")

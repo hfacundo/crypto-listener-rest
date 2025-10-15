@@ -36,15 +36,22 @@ from app.utils.binance.utils import is_trade_allowed_by_schedule_utc
 from app.utils.sqs_evaluator import SQSEvaluator
 from app.utils.user_risk_validator import UserRiskProfileValidator
 
+# ========== LOGGING CONFIGURATION ==========
+from app.utils.logger_config import get_logger
+
+# Inicializar logger global
+logger = get_logger("crypto-listener-rest")
+# ===========================================
+
 # Configuration
 DEPLOYMENT_ENV = os.environ.get("DEPLOYMENT_ENV", "main")
 
 if DEPLOYMENT_ENV == "main":
     USERS = [COPY_TRADING, HUFSA, COPY_2, FUTURES]
-    print(f"🟢 Entorno: PRINCIPAL (4 usuarios: COPY_TRADING, HUFSA, COPY_2, FUTURES)")
+    logger.info(f"🟢 Entorno: PRINCIPAL (4 usuarios: COPY_TRADING, HUFSA, COPY_2, FUTURES)")
 elif DEPLOYMENT_ENV == "secondary":
     USERS = [COPY_2, FUTURES]
-    print(f"🟡 Entorno: SECUNDARIO (COPY_2, FUTURES)")
+    logger.info(f"🟡 Entorno: SECUNDARIO (COPY_2, FUTURES)")
 else:
     raise ValueError(f"DEPLOYMENT_ENV inválido: {DEPLOYMENT_ENV}")
 
