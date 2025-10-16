@@ -172,17 +172,47 @@ def _fetch_orderbook_fallback(symbol, client):
         return None
 
 def validate_spread(symbol: str, entry_price: float, filters: dict, order_book: dict, mark_price: float) -> bool:
+    """
+    Valida spread usando métricas pre-calculadas cuando disponible (crypto-data-redis).
+    Fallback a cálculo manual si no están disponibles.
+    """
+    # ✅ OPTIMIZACIÓN: Usar spread pre-calculado si disponible
+    if "spread_pct" in order_book and order_book.get("source") == "websocket_cache":
+        # Datos desde crypto-data-redis con spread ya calculado
+        spread_pct = order_book["spread_pct"] / 100  # Convertir de % a decimal
+
+        limits = get_dynamic_spread_limits(symbol, filters, mark_price)
+
+        # Calcular spread absoluto desde spread_pct para validar ambos límites
+        spread_abs = entry_price * spread_pct
+
+        print(f"📊 Spread optimizado (pre-calculado): {spread_pct*100:.4f}%, abs: {spread_abs:.6f}")
+
+        if spread_abs > limits["max_spread"]:
+            print(f"❌ Spread absoluto ({spread_abs:.6f}) excede el máximo permitido ({limits['max_spread']})")
+            return False
+
+        if spread_pct > limits["max_spread_pct"]:
+            print(f"❌ Spread relativo ({spread_pct:.6f}) excede el máximo permitido ({limits['max_spread_pct']:.6f})")
+            return False
+
+        print(f"✅ Spread aceptable (cache hit)")
+        return True
+
+    # Fallback: Cálculo manual tradicional
     book = {
         "bids": order_book["bids"][:5],
         "asks": order_book["asks"][:5]
     }
-  
+
     best_bid = float(book["bids"][0][0])
     best_ask = float(book["asks"][0][0])
     spread = best_ask - best_bid
     spread_pct = spread / entry_price
 
     limits = get_dynamic_spread_limits(symbol, filters, mark_price)
+
+    print(f"📊 Spread manual: {spread_pct*100:.4f}%, abs: {spread:.6f}")
 
     if spread > limits["max_spread"]:
         print(f"❌ Spread absoluto ({spread}) excede el máximo permitido ({limits['max_spread']})")
@@ -195,6 +225,32 @@ def validate_spread(symbol: str, entry_price: float, filters: dict, order_book: 
     return True
 
 def validate_slippage(symbol: str, entry_price: float, order_book: dict) -> bool:
+    """
+    Valida slippage usando métricas pre-calculadas cuando disponible (crypto-data-redis).
+    Fallback a cálculo manual si no están disponibles.
+    """
+    # ✅ OPTIMIZACIÓN: Usar slippage pre-calculado si disponible
+    if "slippage_pct" in order_book and order_book.get("source") == "websocket_cache":
+        # Datos desde crypto-data-redis con slippage ya calculado
+        slippage_pct_precalc = order_book["slippage_pct"] / 100  # Convertir de % a decimal
+        slippage_abs = entry_price * slippage_pct_precalc
+
+        limits = get_dynamic_slippage_limits(symbol)
+        max_slippage = limits.get(MAX_SLIPPAGE)
+        max_slippage_pct = limits.get(MAX_SLIPPAGE_PCT)
+
+        print(f"🧪 Validación de slippage optimizada (pre-calculado) para {symbol}")
+        print(f"📈 Entry: {entry_price:.6f}, Slippage: {slippage_abs:.6f} ({slippage_pct_precalc*100:.4f}%)")
+        print(f"🎯 Máx slippage: abs={max_slippage:.6f}, pct={max_slippage_pct:.6f}")
+
+        if slippage_abs > max_slippage or slippage_pct_precalc > max_slippage_pct:
+            print(f"❌ Slippage demasiado alto para {symbol} (cache hit)")
+            return False
+
+        print(f"✅ Slippage aceptable para {symbol} (cache hit)")
+        return True
+
+    # Fallback: Cálculo manual tradicional
     book = {
         "bids": order_book["bids"][:5],
         "asks": order_book["asks"][:5]
@@ -217,14 +273,14 @@ def validate_slippage(symbol: str, entry_price: float, order_book: dict) -> bool
     max_slippage = limits.get(MAX_SLIPPAGE)
     max_slippage_pct = limits.get(MAX_SLIPPAGE_PCT)
 
-    print(f"🧪 Validación de slippage para {symbol}") 
-    print(f"📈 Entry: {entry_price:.6f}, Mark: {mark_price:.6f}, Slippage: {slippage:.6f}") 
-    print(f"🎯 Máx slippage: abs={max_slippage:.6f}, pct={max_slippage_pct:.6f} ({entry_price * max_slippage_pct:.6f})") 
+    print(f"🧪 Validación de slippage manual para {symbol}")
+    print(f"📈 Entry: {entry_price:.6f}, Mark: {mark_price:.6f}, Slippage: {slippage:.6f}")
+    print(f"🎯 Máx slippage: abs={max_slippage:.6f}, pct={max_slippage_pct:.6f} ({entry_price * max_slippage_pct:.6f})")
 
     if slippage > max_slippage or slippage > entry_price * max_slippage_pct:
         print(f"❌ Slippage demasiado alto para {symbol}")
         return False
-    
+
     print(f"✅ Slippage aceptable para {symbol}")
     return True
 

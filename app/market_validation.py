@@ -28,18 +28,51 @@ def get_fresh_market_data(symbol: str, user_id: str) -> Dict[str, Any]:
             # Fallback a API
             orderbook = client.futures_order_book(symbol=symbol.upper(), limit=20)
 
-        best_bid = float(orderbook["bids"][0][0]) if orderbook["bids"] else 0
-        best_ask = float(orderbook["asks"][0][0]) if orderbook["asks"] else 0
-        spread_pct = ((best_ask - best_bid) / best_ask * 100) if best_ask > 0 else 0
+        # ✅ OPTIMIZACIÓN: Usar métricas pre-calculadas del cache cuando estén disponibles
+        data_source = orderbook.get("source", "api_fallback")
 
-        return {
-            "mark_price": mark_price,
-            "best_bid": best_bid,
-            "best_ask": best_ask,
-            "spread_pct": round(spread_pct, 4),
-            "timestamp": time.time(),
-            "data_source": "fresh_api"
-        }
+        if data_source == "websocket_cache" and "spread_pct" in orderbook:
+            # Usar valores pre-calculados (cache hit)
+            best_bid = orderbook.get("best_bid", 0)
+            best_ask = orderbook.get("best_ask", 0)
+            spread_pct = orderbook.get("spread_pct", 0)
+
+            result = {
+                "mark_price": mark_price,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread_pct": round(spread_pct, 4),
+                "timestamp": time.time(),
+                "data_source": "websocket_cache"
+            }
+
+            # Incluir métricas adicionales si están disponibles
+            if "slippage_pct" in orderbook:
+                result["slippage_pct"] = round(orderbook["slippage_pct"], 4)
+            if "imbalance_pct" in orderbook:
+                result["imbalance_pct"] = round(orderbook["imbalance_pct"], 4)
+            if "depth_bid_usdt" in orderbook:
+                result["depth_bid_usdt"] = orderbook["depth_bid_usdt"]
+            if "depth_ask_usdt" in orderbook:
+                result["depth_ask_usdt"] = orderbook["depth_ask_usdt"]
+
+            print(f"✅ Market data from cache (optimized): {symbol}, spread={spread_pct:.4f}%")
+            return result
+        else:
+            # Fallback: Cálculo manual tradicional
+            best_bid = float(orderbook["bids"][0][0]) if orderbook["bids"] else 0
+            best_ask = float(orderbook["asks"][0][0]) if orderbook["asks"] else 0
+            spread_pct = ((best_ask - best_bid) / best_ask * 100) if best_ask > 0 else 0
+
+            print(f"⚠️ Market data from API fallback: {symbol}, spread={spread_pct:.4f}%")
+            return {
+                "mark_price": mark_price,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread_pct": round(spread_pct, 4),
+                "timestamp": time.time(),
+                "data_source": data_source
+            }
 
     except Exception as e:
         print(f"❌ Error getting fresh market data for {symbol}: {e}")

@@ -109,12 +109,13 @@ class BinanceCacheClient:
 
     def get_orderbook_data(self, symbol: str, depth_limit: int = 100, client=None, max_age: int = 30) -> Optional[Dict]:
         """
-        Obtiene orderbook data desde cache de crypto-analyzer-redis.
+        Obtiene orderbook data desde cache de crypto-data-redis.
+        Lee desde websocket:orderbook:{symbol} generado por crypto-data-redis.
         Si no está disponible, hace fallback a API call directo.
 
         Args:
             symbol: Símbolo (ej: BTCUSDT)
-            depth_limit: Límite de profundidad (debe coincidir con el cache)
+            depth_limit: Límite de profundidad (para fallback API, ignorado para cache)
             client: Cliente de Binance (para fallback)
             max_age: Edad máxima aceptable del cache en segundos
 
@@ -122,16 +123,16 @@ class BinanceCacheClient:
             Dict con orderbook data o None
         """
         try:
-            # Orderbook usa prefix "binance_cache" (solo algunos símbolos cacheados)
-            cache_key = f"{self.binance_cache_prefix}:orderbook:{symbol.lower()}:{depth_limit}"
+            # ✅ FIX: Usar la clave correcta de crypto-data-redis
+            # crypto-data-redis guarda en: websocket:orderbook:{symbol}
+            cache_key = f"{self.websocket_prefix}:orderbook:{symbol.lower()}"
 
-            logger.warning(f"🔍 DEBUG: Buscando orderbook en Redis key: '{cache_key}'")
+            logger.debug(f"🔍 Buscando orderbook en Redis key: '{cache_key}'")
 
-            # Intentar obtener desde cache
+            # Intentar obtener desde cache de crypto-data-redis
             cached_data = self.redis_client.get(cache_key)
 
             if cached_data:
-                logger.warning(f"🔍 DEBUG: Orderbook encontrado en Redis para '{symbol}': {len(cached_data)} bytes")
                 data = json.loads(cached_data)
 
                 # Verificar age
@@ -139,14 +140,41 @@ class BinanceCacheClient:
 
                 if age <= max_age:
                     self.stats['cache_hits'] += 1
-                    orderbook = data['orderbook_data']
-                    logger.warning(f"✅ DEBUG: Orderbook cache HIT: {symbol} (age: {age:.1f}s, bids: {len(orderbook.get('bids', []))}, asks: {len(orderbook.get('asks', []))})")
+
+                    # ✅ FIX: Convertir formato de crypto-data-redis a formato esperado
+                    # crypto-data-redis guarda: best_bid, best_ask, spread_pct, slippage_pct, etc.
+                    # Necesitamos: bids[], asks[], plus métricas extras
+
+                    best_bid = data.get('best_bid', 0)
+                    best_ask = data.get('best_ask', 0)
+
+                    orderbook = {
+                        # Formato compatible con validadores existentes
+                        "bids": [[str(best_bid), "1.0"]] if best_bid > 0 else [],
+                        "asks": [[str(best_ask), "1.0"]] if best_ask > 0 else [],
+
+                        # ✅ BONUS: Métricas pre-calculadas (ahorra cálculos)
+                        "spread_pct": data.get('spread_pct', 0),
+                        "slippage_pct": data.get('slippage_pct', 0),
+                        "depth_bid_usdt": data.get('depth_bid_usdt', 0),
+                        "depth_ask_usdt": data.get('depth_ask_usdt', 0),
+                        "imbalance_pct": data.get('imbalance_pct', 0),
+                        "slippage_qty": data.get('slippage_qty', 0),
+                        "category": data.get('category', 'unknown'),
+                        "session": data.get('session', 'unknown'),
+
+                        # Metadata
+                        "timestamp": data.get('timestamp', 0),
+                        "source": "websocket_cache"
+                    }
+
+                    logger.info(f"✅ Orderbook cache HIT: {symbol} (age: {age:.1f}s, spread: {orderbook['spread_pct']:.4f}%)")
                     return orderbook
                 else:
-                    logger.warning(f"⚠️ DEBUG: Orderbook cache STALE: {symbol} (age: {age:.1f}s > max_age: {max_age}s)")
+                    logger.debug(f"⚠️ Orderbook cache STALE: {symbol} (age: {age:.1f}s > max_age: {max_age}s)")
 
             else:
-                logger.error(f"❌ DEBUG: Orderbook NO encontrado en Redis key: '{cache_key}'")
+                logger.debug(f"❌ Orderbook NO encontrado en Redis key: '{cache_key}'")
 
             # Cache miss o stale - hacer fallback a API si tenemos client
             self.stats['cache_misses'] += 1
@@ -156,12 +184,13 @@ class BinanceCacheClient:
                 self.stats['fallback_api_calls'] += 1
                 order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
 
-                logger.warning(f"🔍 DEBUG: Orderbook desde API: bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
+                logger.info(f"📞 Orderbook desde API: bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
 
                 # Retornar raw orderbook (el llamador procesará según necesite)
                 return {
                     "bids": order_book.get("bids", []),
-                    "asks": order_book.get("asks", [])
+                    "asks": order_book.get("asks", []),
+                    "source": "api_fallback"
                 }
             else:
                 logger.error(f"❌ Orderbook cache MISS: {symbol} - no client for fallback")
@@ -177,7 +206,8 @@ class BinanceCacheClient:
                     order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
                     return {
                         "bids": order_book.get("bids", []),
-                        "asks": order_book.get("asks", [])
+                        "asks": order_book.get("asks", []),
+                        "source": "api_fallback_error"
                     }
                 except Exception as api_error:
                     logger.error(f"❌ API fallback also failed for {symbol}: {api_error}")
