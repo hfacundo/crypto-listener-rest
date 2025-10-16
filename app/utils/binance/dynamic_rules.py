@@ -70,13 +70,13 @@ def adjust_base_depth_and_depth_pct_for_symbol(symbol, client, order_book, mark_
                 print(f"✅ Dynamic depth config for {symbol}: {result}")
                 return result
 
-        fallback = {MIN_DEPTH_BASE: 500, DEPTH_PCT: 0.05}
+        fallback = {MIN_DEPTH_BASE: 100, DEPTH_PCT: 0.10}
         print(f"⚠️ Using fallback depth config for {symbol}: {fallback}")
         return fallback
 
     except Exception as e:
         print(f"❌ Error ajustando reglas dinámicas para {symbol}: {e}")
-        return {MIN_DEPTH_BASE: 500, DEPTH_PCT: 0.05}
+        return {MIN_DEPTH_BASE: 100, DEPTH_PCT: 0.10}
 
 
 def get_dynamic_slippage_limits(symbol: str) -> dict:

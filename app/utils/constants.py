@@ -62,8 +62,8 @@ DEFAULT_MAX_SPREAD_PCT = 0.3 # 0.3%
 DEFAULT_TICK_MULTIPLIER  = 3
 DEFAULT_ATR_SLIP_MULT = 0.8
 DEFAULT_ATR_SPREAD_MULT = 0.2
-DEFAULT_DEPTH_PCT = 0.05 # 5% (rango amplio para validación de liquidez)
-DEFAULT_MIN_DEPTH_BASE = 500 # Mínimo aceptable en USDT
+DEFAULT_DEPTH_PCT = 0.10 # 10% (rango muy amplio para capturar más liquidez)
+DEFAULT_MIN_DEPTH_BASE = 100 # Mínimo muy bajo - capital $500
 DEFAULT_ORDER_RETRIES = 3
 DEFAULT_DELAY = 2
 DEFAULT_MAX_NEWS_PER_SYMBOL = 3
@@ -72,10 +72,10 @@ DEFAULT_PRINT_LOGS = False
 DEFAULT_SPREAD_MULTIPLIER = 5
 
 DEFAULT_LIQUIDITY_TIERS = [
-    {"vol": 2_000_000, "depth": 100_000, "min_depth_base": 30_000, "depth_pct": 0.01},   # Tier 1: Cryptos muy líquidos
-    {"vol": 1_000_000, "depth": 50_000, "min_depth_base": 15_000, "depth_pct": 0.02},    # Tier 2: Cryptos medianos
-    {"vol": 300_000, "depth": 20_000, "min_depth_base": 5_000, "depth_pct": 0.03},       # Tier 3: Cryptos pequeños
-    {"vol": 0, "depth": 0, "min_depth_base": 500, "depth_pct": 0.05}                     # Tier 4: Fallback mínimo aceptable
+    {"vol": 2_000_000, "depth": 100_000, "min_depth_base": 10_000, "depth_pct": 0.02},   # Tier 1: Cryptos muy líquidos
+    {"vol": 1_000_000, "depth": 50_000, "min_depth_base": 5_000, "depth_pct": 0.05},     # Tier 2: Cryptos medianos
+    {"vol": 300_000, "depth": 20_000, "min_depth_base": 1_000, "depth_pct": 0.08},       # Tier 3: Cryptos pequeños
+    {"vol": 0, "depth": 0, "min_depth_base": 100, "depth_pct": 0.10}                     # Tier 4: Fallback ultra-permisivo para capital $500
 ]
 
 # cryptopanic
