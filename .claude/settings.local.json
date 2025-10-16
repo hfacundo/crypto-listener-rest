@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Read(//mnt/d/Development/python/**)"
+      "Read(//mnt/d/Development/python/**)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nRelajar aún más filtros de liquidez para capital $500\n\nAjustes ultra-permisivos para aprovechar oportunidades con capital pequeño:\n- min_depth_base: 500 → 100 USDT (reducción del 80%)\n- depth_pct: 5% → 10% (rango ampliado al doble)\n\nNuevos tiers de liquidez:\n- Tier 1: 10k USDT @ 2%  (antes 30k @ 1%)\n- Tier 2: 5k USDT @ 5%   (antes 15k @ 2%)\n- Tier 3: 1k USDT @ 8%   (antes 5k @ 3%)\n- Tier 4: 100 USDT @ 10% (antes 500 @ 5%) - fallback ultra-permisivo\n\nCon capital de $500 y risk_pct típico de 2%:\n- Capital por trade: ~$10\n- Con leverage 10-20x: posiciones de $100-$200\n- Liquidez mínima 100 USDT es suficiente\n\nArchivos modificados:\n- app/utils/constants.py\n- app/utils/binance/dynamic_rules.py\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

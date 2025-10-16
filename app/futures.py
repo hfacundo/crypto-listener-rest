@@ -60,17 +60,9 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
         return {"success": False, "error": "Invalid symbol filters"}
 
     # 2. Ajustar dinámicamente profundidad mínima y profundidad relativa
-    # Usar cache para orderbook y mark_price
-    from app.utils.binance.binance_cache_client import get_binance_cache_client
-    cache_client = get_binance_cache_client()
-
-    # Obtener orderbook con cache
-    orderbook_data = cache_client.get_orderbook_data(symbol, depth_limit=100, client=client, max_age=30)
-    if orderbook_data:
-        order_book = orderbook_data
-    else:
-        # Fallback directo
-        order_book = client.futures_order_book(symbol=symbol, limit=100)
+    # Obtener orderbook DIRECTO desde Binance API (sin cache Redis)
+    order_book = client.futures_order_book(symbol=symbol, limit=100)
+    print(f"📘 Orderbook obtenido desde API: bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
 
     # Obtener mark_price con cache (la función get_mark_price en utils.py ya usa cache)
     mark_price = get_mark_price(symbol, client)
