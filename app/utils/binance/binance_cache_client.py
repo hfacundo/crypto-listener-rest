@@ -107,90 +107,146 @@ class BinanceCacheClient:
 
             return None
 
-    def get_orderbook_data(self, symbol: str, depth_limit: int = 100, client=None, max_age: int = 30) -> Optional[Dict]:
+    def get_orderbook_data(self, symbol: str, depth_limit: int = None, client=None, max_age: int = 4) -> Optional[Dict]:
         """
-        Obtiene orderbook data desde cache de crypto-data-redis.
-        Lee desde websocket:orderbook:{symbol} generado por crypto-data-redis.
-        Si no está disponible, hace fallback a API call directo.
+        Obtiene orderbook data con estrategia de cache inteligente.
+
+        Estrategia multi-layer (freshness requirement: ≤4s):
+        1. Cache de crypto-analyzer-redis (binance_cache:orderbook:{symbol}:{depth})
+        2. WebSocket cache de crypto-data-redis (websocket:orderbook:{symbol}) - DEPRECADO
+        3. API call directo con depth granular automático
 
         Args:
             symbol: Símbolo (ej: BTCUSDT)
-            depth_limit: Límite de profundidad (para fallback API, ignorado para cache)
+            depth_limit: Límite de profundidad (auto-detecta si None)
             client: Cliente de Binance (para fallback)
-            max_age: Edad máxima aceptable del cache en segundos
+            max_age: Edad máxima aceptable del cache en segundos (default: 4s)
 
         Returns:
             Dict con orderbook data o None
         """
         try:
-            # ✅ FIX: Usar la clave correcta de crypto-data-redis
-            # crypto-data-redis guarda en: websocket:orderbook:{symbol}
-            cache_key = f"{self.websocket_prefix}:orderbook:{symbol.lower()}"
+            # Auto-detect depth limit usando la misma lógica que crypto-analyzer-redis
+            if depth_limit is None:
+                depth_limit = self._get_depth_limit_granular(symbol)
 
-            logger.debug(f"🔍 Buscando orderbook en Redis key: '{cache_key}'")
+            # 🎯 PRIORIDAD 1: Cache de crypto-analyzer-redis (más reciente, con depth específico)
+            # Formato: binance_cache:orderbook:{symbol}:{depth_limit}
+            analyzer_cache_key = f"{self.binance_cache_prefix}:orderbook:{symbol.lower()}:{depth_limit}"
 
-            # Intentar obtener desde cache de crypto-data-redis
-            cached_data = self.redis_client.get(cache_key)
+            logger.debug(f"🔍 Intentando cache de crypto-analyzer-redis: '{analyzer_cache_key}'")
+
+            cached_data = self.redis_client.get(analyzer_cache_key)
 
             if cached_data:
-                data = json.loads(cached_data)
+                try:
+                    cache_entry = json.loads(cached_data)
+                    age = time.time() - cache_entry.get('timestamp', 0)
 
-                # Verificar age
-                age = time.time() - data.get('timestamp', 0)
+                    if age <= max_age:
+                        # Cache HIT desde crypto-analyzer-redis
+                        self.stats['cache_hits'] += 1
+                        orderbook_data = cache_entry.get('orderbook_data', {})
 
-                if age <= max_age:
-                    self.stats['cache_hits'] += 1
+                        logger.info(f"✅ Orderbook cache HIT (analyzer): {symbol} (age: {age:.1f}s, depth: {depth_limit})")
 
-                    # ✅ FIX: Convertir formato de crypto-data-redis a formato esperado
-                    # crypto-data-redis guarda: best_bid, best_ask, spread_pct, slippage_pct, etc.
-                    # Necesitamos: bids[], asks[], plus métricas extras
+                        # Retornar datos (ya están en formato procesado)
+                        return {
+                            **orderbook_data,
+                            "source": "analyzer_cache",
+                            "cache_age": age
+                        }
+                    else:
+                        logger.debug(f"⏰ Cache de analyzer STALE: {symbol} (age: {age:.1f}s > max_age: {max_age}s)")
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.debug(f"⚠️ Error parsing analyzer cache for {symbol}: {e}")
 
-                    best_bid = data.get('best_bid', 0)
-                    best_ask = data.get('best_ask', 0)
+            # 🎯 PRIORIDAD 2: WebSocket cache de crypto-data-redis (DEPRECADO pero backward compatible)
+            # Formato: websocket:orderbook:{symbol}
+            websocket_cache_key = f"{self.websocket_prefix}:orderbook:{symbol.lower()}"
 
-                    orderbook = {
-                        # Formato compatible con validadores existentes
-                        "bids": [[str(best_bid), "1.0"]] if best_bid > 0 else [],
-                        "asks": [[str(best_ask), "1.0"]] if best_ask > 0 else [],
+            logger.debug(f"🔍 Intentando WebSocket cache (deprecated): '{websocket_cache_key}'")
 
-                        # ✅ BONUS: Métricas pre-calculadas (ahorra cálculos)
-                        "spread_pct": data.get('spread_pct', 0),
-                        "slippage_pct": data.get('slippage_pct', 0),
-                        "depth_bid_usdt": data.get('depth_bid_usdt', 0),
-                        "depth_ask_usdt": data.get('depth_ask_usdt', 0),
-                        "imbalance_pct": data.get('imbalance_pct', 0),
-                        "slippage_qty": data.get('slippage_qty', 0),
-                        "category": data.get('category', 'unknown'),
-                        "session": data.get('session', 'unknown'),
+            cached_data = self.redis_client.get(websocket_cache_key)
 
-                        # Metadata
-                        "timestamp": data.get('timestamp', 0),
-                        "source": "websocket_cache"
-                    }
+            if cached_data:
+                try:
+                    data = json.loads(cached_data)
 
-                    logger.info(f"✅ Orderbook cache HIT: {symbol} (age: {age:.1f}s, spread: {orderbook['spread_pct']:.4f}%)")
-                    return orderbook
-                else:
-                    logger.debug(f"⚠️ Orderbook cache STALE: {symbol} (age: {age:.1f}s > max_age: {max_age}s)")
+                    # Verificar age
+                    age = time.time() - data.get('timestamp', 0)
 
-            else:
-                logger.debug(f"❌ Orderbook NO encontrado en Redis key: '{cache_key}'")
+                    if age <= max_age:
+                        self.stats['cache_hits'] += 1
 
-            # Cache miss o stale - hacer fallback a API si tenemos client
+                        # ✅ Convertir formato de crypto-data-redis (WebSocket) a formato esperado
+                        best_bid = data.get('best_bid', 0)
+                        best_ask = data.get('best_ask', 0)
+
+                        orderbook = {
+                            # Formato compatible con validadores existentes
+                            "bids": [[str(best_bid), "1.0"]] if best_bid > 0 else [],
+                            "asks": [[str(best_ask), "1.0"]] if best_ask > 0 else [],
+
+                            # Métricas pre-calculadas
+                            "spread_pct": data.get('spread_pct', 0),
+                            "slippage_pct": data.get('slippage_pct', 0),
+                            "depth_bid_usdt": data.get('depth_bid_usdt', 0),
+                            "depth_ask_usdt": data.get('depth_ask_usdt', 0),
+                            "imbalance_pct": data.get('imbalance_pct', 0),
+                            "slippage_qty": data.get('slippage_qty', 0),
+                            "category": data.get('category', 'unknown'),
+                            "session": data.get('session', 'unknown'),
+
+                            # Metadata
+                            "timestamp": data.get('timestamp', 0),
+                            "source": "websocket_cache",
+                            "cache_age": age
+                        }
+
+                        logger.info(f"✅ Orderbook cache HIT (websocket): {symbol} (age: {age:.1f}s, spread: {orderbook['spread_pct']:.4f}%)")
+                        return orderbook
+                    else:
+                        logger.debug(f"⏰ WebSocket cache STALE: {symbol} (age: {age:.1f}s > max_age: {max_age}s)")
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.debug(f"⚠️ Error parsing WebSocket cache for {symbol}: {e}")
+
+            # 🎯 PRIORIDAD 3: API call fallback con depth granular
             self.stats['cache_misses'] += 1
 
             if client:
-                logger.warning(f"⚠️ Orderbook cache MISS: {symbol} - fallback to API")
+                logger.warning(f"⚠️ Orderbook cache MISS: {symbol} - fallback to API (depth={depth_limit})")
                 self.stats['fallback_api_calls'] += 1
+
+                # API call con depth limit óptimo
                 order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
 
-                logger.info(f"📞 Orderbook desde API: bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
+                logger.info(f"📞 Orderbook desde API: {symbol} - bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
 
-                # Retornar raw orderbook (el llamador procesará según necesite)
+                # Procesar orderbook (calcular métricas)
+                orderbook_processed = self._process_orderbook_api(order_book, symbol)
+
+                # ✅ CRÍTICO: Guardar en Redis para reutilización (30s TTL)
+                try:
+                    cache_data = {
+                        'orderbook_data': orderbook_processed,
+                        'timestamp': time.time()
+                    }
+                    # Guardar con mismo formato que crypto-analyzer-redis
+                    self.redis_client.setex(
+                        analyzer_cache_key,
+                        self.ttl_config['orderbook'],  # 30 segundos
+                        json.dumps(cache_data)
+                    )
+                    logger.debug(f"💾 Orderbook guardado en Redis: {analyzer_cache_key} (TTL=30s)")
+                except Exception as cache_error:
+                    logger.warning(f"⚠️ Failed to cache orderbook for {symbol}: {cache_error}")
+
+                # Retornar datos procesados con source
                 return {
-                    "bids": order_book.get("bids", []),
-                    "asks": order_book.get("asks", []),
-                    "source": "api_fallback"
+                    **orderbook_processed,
+                    "source": "api_fallback",
+                    "cache_age": 0
                 }
             else:
                 logger.error(f"❌ Orderbook cache MISS: {symbol} - no client for fallback")
@@ -202,17 +258,167 @@ class BinanceCacheClient:
             # Fallback a API si disponible
             if client:
                 try:
+                    # Auto-detect depth si no se especificó
+                    if depth_limit is None:
+                        depth_limit = self._get_depth_limit_granular(symbol)
+
                     self.stats['fallback_api_calls'] += 1
                     order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
+
+                    # Procesar orderbook
+                    orderbook_processed = self._process_orderbook_api(order_book, symbol)
+
                     return {
-                        "bids": order_book.get("bids", []),
-                        "asks": order_book.get("asks", []),
-                        "source": "api_fallback_error"
+                        **orderbook_processed,
+                        "source": "api_fallback_error",
+                        "cache_age": 0
                     }
                 except Exception as api_error:
                     logger.error(f"❌ API fallback also failed for {symbol}: {api_error}")
 
             return None
+
+    def _get_depth_limit_granular(self, symbol: str) -> int:
+        """
+        Determina el depth limit óptimo usando la misma lógica granular que crypto-analyzer-redis.
+
+        Categorización optimizada para slippage_qty=$3-4K:
+        - Ultra-líquidos (BTC, ETH, BNB): 50 niveles suficientes
+        - High-liquidity (Top 10): 75 niveles para seguridad
+        - Low-liquidity (Memecoins/Nuevos): 100 niveles crítico
+        - Mid-liquidity (Resto): 75 niveles balanceado
+
+        Args:
+            symbol: Símbolo de la criptomoneda
+
+        Returns:
+            int: Depth limit óptimo
+        """
+        symbol_lower = symbol.lower()
+
+        # Ultra-líquidos: BTC, ETH, BNB tienen liquidez extrema (>$20K por nivel)
+        if symbol_lower in {'btcusdt', 'ethusdt', 'bnbusdt'}:
+            return 50  # Suficiente para $4K slippage
+
+        # High-liquidity: Top altcoins con liquidez consistente
+        HIGH_LIQUIDITY = {
+            'btcusdt', 'ethusdt', 'bnbusdt', 'solusdt', 'adausdt', 'dogeusdt', 'xrpusdt', 'ltcusdt',
+            'dotusdt', 'linkusdt', 'trxusdt', 'maticusdt', 'avaxusdt', 'xlmusdt'
+        }
+        if symbol_lower in HIGH_LIQUIDITY:
+            return 75  # Margen de seguridad
+
+        # Low-liquidity: Memecoins y tokens nuevos con orderbook delgado
+        LOW_LIQUIDITY = {
+            'virtualusdt', 'vicusdt', 'wifusdt', 'trumpusdt', 'notusdt',
+            'opusdt', 'ordiusdt', 'hyperusdt', 'paxgusdt'
+        }
+        if symbol_lower in LOW_LIQUIDITY:
+            return 100  # Crítico para precisión
+
+        # Mid-liquidity: Resto de altcoins establecidos
+        return 75  # Balance entre precisión y performance
+
+    def _process_orderbook_api(self, order_book: dict, symbol: str) -> dict:
+        """
+        Procesa orderbook raw de API y calcula métricas (spread, slippage, depth, imbalance).
+
+        Args:
+            order_book: Orderbook raw de Binance API {"bids": [[p,q],...], "asks": [[p,q],...]}
+            symbol: Símbolo de la criptomoneda
+
+        Returns:
+            dict: Orderbook procesado con métricas calculadas
+        """
+        try:
+            bids = order_book.get("bids", [])
+            asks = order_book.get("asks", [])
+
+            if not bids or not asks:
+                logger.warning(f"⚠️ Orderbook vacío para {symbol}")
+                return {
+                    "bids": [],
+                    "asks": [],
+                    "spread_pct": 0,
+                    "slippage_pct": 0,
+                    "depth_bid": 0,
+                    "depth_ask": 0,
+                    "imbalance_pct": 0
+                }
+
+            # Best bid/ask
+            best_bid = float(bids[0][0])
+            best_ask = float(asks[0][0])
+
+            # Spread
+            spread_abs = best_ask - best_bid
+            spread_pct = (spread_abs / best_ask) * 100
+
+            # Depth (liquidez total en USDT, convertido a millones)
+            def total_notional(orders):
+                return sum(float(p) * float(q) for p, q in orders)
+
+            bid_notional = total_notional(bids)
+            ask_notional = total_notional(asks)
+
+            # Imbalance (positivo = más bids, negativo = más asks)
+            total_notional_sum = bid_notional + ask_notional
+            imbalance_pct = (
+                ((bid_notional - ask_notional) / total_notional_sum) * 100
+                if total_notional_sum > 0 else 0
+            )
+
+            # Slippage (estimación de ejecución de market order para $3K)
+            slippage_qty = 3000  # DEFAULT_SLIPPAGE_QTY
+
+            def estimate_slippage(orderbook_side, qty_usdt):
+                """Estima precio promedio de ejecución"""
+                filled = 0
+                total_qty = 0
+
+                for price_str, qty_str in orderbook_side:
+                    price = float(price_str)
+                    qty = float(qty_str)
+                    notional = price * qty
+
+                    if filled + notional >= qty_usdt:
+                        remaining = qty_usdt - filled
+                        qty_needed = remaining / price
+                        total_qty += qty_needed
+                        break
+
+                    filled += notional
+                    total_qty += qty
+
+                avg_price = qty_usdt / total_qty if total_qty > 0 else best_ask
+                return avg_price
+
+            # Calcular slippage para BUY (market order en asks)
+            avg_execution_price = estimate_slippage(asks, slippage_qty)
+            slippage_pct = ((avg_execution_price - best_ask) / best_ask) * 100
+
+            return {
+                "bids": bids,
+                "asks": asks,
+                "spread_abs": round(spread_abs, 6),
+                "spread_pct": round(spread_pct, 4),
+                "depth_bid": round(bid_notional / 1_000_000, 2),  # Millones
+                "depth_ask": round(ask_notional / 1_000_000, 2),  # Millones
+                "imbalance_pct": round(imbalance_pct, 2),
+                "slippage_pct": round(slippage_pct, 4)
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error procesando orderbook API para {symbol}: {e}")
+            return {
+                "bids": order_book.get("bids", []),
+                "asks": order_book.get("asks", []),
+                "spread_pct": 0,
+                "slippage_pct": 0,
+                "depth_bid": 0,
+                "depth_ask": 0,
+                "imbalance_pct": 0
+            }
 
     def get_klines_from_redis(self, symbol: str, interval: str = "1m", limit: int = 60) -> Optional[list]:
         """

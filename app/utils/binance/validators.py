@@ -144,6 +144,7 @@ def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, cli
 def _fetch_orderbook_fallback(symbol, client):
     """
     Función helper para obtener orderbook directamente de Binance API como fallback.
+    Usa depth limit granular optimizado según liquidez del símbolo.
 
     Args:
         symbol: Símbolo a consultar
@@ -157,11 +158,14 @@ def _fetch_orderbook_fallback(symbol, client):
         return None
 
     try:
-        print(f"🔄 Fallback: Obteniendo orderbook fresh desde Binance API para {symbol}")
-        order_book = client.futures_order_book(symbol=symbol.upper(), limit=100)
+        # Usar depth limit granular optimizado (igual que crypto-analyzer-redis)
+        depth_limit = _get_depth_limit_granular(symbol)
+
+        print(f"🔄 Fallback: Obteniendo orderbook fresh desde Binance API para {symbol} (depth={depth_limit})")
+        order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
 
         if order_book and "bids" in order_book and "asks" in order_book:
-            print(f"✅ Orderbook obtenido desde API - bids: {len(order_book['bids'])}, asks: {len(order_book['asks'])}")
+            print(f"✅ Orderbook obtenido desde API - bids: {len(order_book['bids'])}, asks: {len(order_book['asks'])}, depth={depth_limit}")
             return order_book
         else:
             print(f"❌ Orderbook desde API inválido")
@@ -170,6 +174,49 @@ def _fetch_orderbook_fallback(symbol, client):
     except Exception as e:
         print(f"❌ Error en fallback API para orderbook {symbol}: {e}")
         return None
+
+
+def _get_depth_limit_granular(symbol: str) -> int:
+    """
+    Determina el depth limit óptimo usando categorización granular.
+    Replica la lógica de crypto-analyzer-redis para consistencia.
+
+    Categorización optimizada para slippage_qty=$3-4K:
+    - Ultra-líquidos (BTC, ETH, BNB): 50 niveles suficientes
+    - High-liquidity (Top 10): 75 niveles para seguridad
+    - Low-liquidity (Memecoins/Nuevos): 100 niveles crítico
+    - Mid-liquidity (Resto): 75 niveles balanceado
+
+    Args:
+        symbol: Símbolo de la criptomoneda
+
+    Returns:
+        int: Depth limit óptimo
+    """
+    symbol_lower = symbol.lower()
+
+    # Ultra-líquidos: BTC, ETH, BNB
+    if symbol_lower in {'btcusdt', 'ethusdt', 'bnbusdt'}:
+        return 50
+
+    # High-liquidity: Top altcoins
+    HIGH_LIQUIDITY = {
+        'btcusdt', 'ethusdt', 'bnbusdt', 'solusdt', 'adausdt', 'dogeusdt', 'xrpusdt', 'ltcusdt',
+        'dotusdt', 'linkusdt', 'trxusdt', 'maticusdt', 'avaxusdt', 'xlmusdt'
+    }
+    if symbol_lower in HIGH_LIQUIDITY:
+        return 75
+
+    # Low-liquidity: Memecoins y tokens nuevos
+    LOW_LIQUIDITY = {
+        'virtualusdt', 'vicusdt', 'wifusdt', 'trumpusdt', 'notusdt',
+        'opusdt', 'ordiusdt', 'hyperusdt', 'paxgusdt'
+    }
+    if symbol_lower in LOW_LIQUIDITY:
+        return 100
+
+    # Mid-liquidity: Resto de altcoins
+    return 75
 
 def validate_spread(symbol: str, entry_price: float, filters: dict, order_book: dict, mark_price: float) -> bool:
     """
