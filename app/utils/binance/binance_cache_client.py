@@ -284,9 +284,11 @@ class BinanceCacheClient:
 
         Categorización optimizada para slippage_qty=$3-4K:
         - Ultra-líquidos (BTC, ETH, BNB): 50 niveles suficientes
-        - High-liquidity (Top 10): 75 niveles para seguridad
+        - High-liquidity (Top 10): 100 niveles para seguridad
         - Low-liquidity (Memecoins/Nuevos): 100 niveles crítico
-        - Mid-liquidity (Resto): 75 niveles balanceado
+        - Mid-liquidity (Resto): 100 niveles balanceado
+
+        IMPORTANTE: Binance Futures API solo acepta: 5, 10, 20, 50, 100, 500, 1000
 
         Args:
             symbol: Símbolo de la criptomoneda
@@ -306,7 +308,7 @@ class BinanceCacheClient:
             'dotusdt', 'linkusdt', 'trxusdt', 'maticusdt', 'avaxusdt', 'xlmusdt'
         }
         if symbol_lower in HIGH_LIQUIDITY:
-            return 75  # Margen de seguridad
+            return 100  # Margen de seguridad (75 no es válido en Binance API)
 
         # Low-liquidity: Memecoins y tokens nuevos con orderbook delgado
         LOW_LIQUIDITY = {
@@ -317,7 +319,7 @@ class BinanceCacheClient:
             return 100  # Crítico para precisión
 
         # Mid-liquidity: Resto de altcoins establecidos
-        return 75  # Balance entre precisión y performance
+        return 100  # Balance entre precisión y performance (75 no es válido en Binance API)
 
     def _process_orderbook_api(self, order_book: dict, symbol: str) -> dict:
         """

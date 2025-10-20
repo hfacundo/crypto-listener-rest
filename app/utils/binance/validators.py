@@ -183,9 +183,11 @@ def _get_depth_limit_granular(symbol: str) -> int:
 
     Categorización optimizada para slippage_qty=$3-4K:
     - Ultra-líquidos (BTC, ETH, BNB): 50 niveles suficientes
-    - High-liquidity (Top 10): 75 niveles para seguridad
+    - High-liquidity (Top 10): 100 niveles para seguridad
     - Low-liquidity (Memecoins/Nuevos): 100 niveles crítico
-    - Mid-liquidity (Resto): 75 niveles balanceado
+    - Mid-liquidity (Resto): 100 niveles balanceado
+
+    IMPORTANTE: Binance Futures API solo acepta: 5, 10, 20, 50, 100, 500, 1000
 
     Args:
         symbol: Símbolo de la criptomoneda
@@ -205,7 +207,7 @@ def _get_depth_limit_granular(symbol: str) -> int:
         'dotusdt', 'linkusdt', 'trxusdt', 'maticusdt', 'avaxusdt', 'xlmusdt'
     }
     if symbol_lower in HIGH_LIQUIDITY:
-        return 75
+        return 100  # 75 no es válido en Binance API
 
     # Low-liquidity: Memecoins y tokens nuevos
     LOW_LIQUIDITY = {
@@ -216,7 +218,7 @@ def _get_depth_limit_granular(symbol: str) -> int:
         return 100
 
     # Mid-liquidity: Resto de altcoins
-    return 75
+    return 100  # 75 no es válido en Binance API
 
 def validate_spread(symbol: str, entry_price: float, filters: dict, order_book: dict, mark_price: float) -> bool:
     """
