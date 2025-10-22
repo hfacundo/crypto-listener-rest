@@ -297,6 +297,7 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
                             guardian_trade_data = {
                                 "symbol": symbol.upper(),
                                 "side": direction.upper(),
+                                "direction": direction.upper(),  # Para light_check.py (compatibilidad)
                                 "entry": entry_price,
                                 "stop": stop_loss,           # Para trailing_stop.py y guardian_service.py
                                 "stop_loss": stop_loss,      # Para light_check.py y decisions.py (compatibilidad)
