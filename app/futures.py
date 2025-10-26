@@ -421,7 +421,7 @@ def adjust_sl_tp_for_open_position(symbol: str, new_stop: float, new_target: flo
         return {"success": False, "error": f"adjust_sl_tp failed: {e}"}
 
 
-def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, user_id: str) -> dict:
+def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, user_id: str, level_metadata: dict = None) -> dict:
     """
     Ajusta SOLO el Stop Loss de una posición abierta:
       - Detecta dirección por positionAmt (BUY si >0, SELL si <0)
@@ -429,6 +429,22 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
       - Enforce: tighten-only (nunca aflojar el SL)
       - Cancela el/los STOP_MARKET actuales y crea uno nuevo
       - No toca el TP existente
+      - Actualiza Redis con tracking de nivel aplicado (si level_metadata provisto)
+
+    Args:
+        symbol: Trading pair
+        new_stop: New stop price
+        client: Binance client
+        user_id: User ID
+        level_metadata: Optional dict with trailing stop level info
+            {
+                "level_name": "break_even",
+                "level_threshold_pct": 35,
+                "previous_level": "towards_be_20"
+            }
+
+    Returns:
+        Dict with success, stop, level_applied, redis_updated, etc.
     """
     try:
         # 0) Validar que haya posición
@@ -502,7 +518,95 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
         if not sl_res:
             return {"success": False, "error": "Failed to create new STOP_MARKET"}
 
-        return {"success": True, "direction": direction, "stop": new_stop_f}
+        # 7) Actualizar Redis para que crypto-guardian use el valor actualizado
+        import json
+        import time
+
+        # Extraer metadata del nivel (si disponible)
+        level_name = "manual_adjust"
+        if level_metadata:
+            level_name = level_metadata.get("level_name", "manual_adjust")
+            previous_level = level_metadata.get("previous_level")
+        else:
+            previous_level = None
+
+        redis_updated = False
+        redis_client = None
+
+        try:
+            redis_client = get_redis_client()
+            if redis_client:
+                guardian_key = f"guardian:trades:{user_id}:{symbol.upper()}"
+                trade_data = redis_client.get(guardian_key)
+
+                if trade_data:
+                    trade_dict = json.loads(trade_data)
+
+                    # Guardar previous_level antes de actualizar
+                    previous_level_from_redis = trade_dict.get('ts_level_applied')
+
+                    # Actualizar campos básicos
+                    trade_dict['stop'] = new_stop_f
+                    trade_dict['stop_loss'] = new_stop_f  # Compatibilidad con light_check.py y decisions.py
+
+                    # Actualizar campos de tracking multinivel
+                    trade_dict['ts_level_applied'] = level_name
+                    trade_dict['ts_last_adjustment_ts'] = time.time()
+                    trade_dict['ts_last_adjustment_stop'] = new_stop_f
+                    trade_dict['ts_previous_stop'] = current_stop if current_stop else new_stop_f
+                    trade_dict['ts_previous_level'] = previous_level or previous_level_from_redis
+
+                    # Intentar guardar en Redis
+                    redis_client.setex(guardian_key, 7*24*3600, json.dumps(trade_dict))
+                    redis_updated = True
+                    print(f"✅ Updated guardian trade stop in Redis: {guardian_key} -> {new_stop_f} (level: {level_name})")
+                else:
+                    print(f"⚠️ Guardian trade not found in Redis: {guardian_key}")
+
+        except Exception as e:
+            # Intentar retry una vez
+            print(f"⚠️ Could not update guardian trade in Redis (first attempt): {e}")
+
+            try:
+                if redis_client:
+                    time.sleep(0.5)  # Esperar 500ms
+                    redis_client = get_redis_client()  # Obtener nuevo cliente
+
+                    if redis_client:
+                        guardian_key = f"guardian:trades:{user_id}:{symbol.upper()}"
+                        trade_data = redis_client.get(guardian_key)
+
+                        if trade_data:
+                            trade_dict = json.loads(trade_data)
+
+                            # Actualizar todos los campos
+                            trade_dict['stop'] = new_stop_f
+                            trade_dict['stop_loss'] = new_stop_f
+                            trade_dict['ts_level_applied'] = level_name
+                            trade_dict['ts_last_adjustment_ts'] = time.time()
+                            trade_dict['ts_last_adjustment_stop'] = new_stop_f
+                            trade_dict['ts_previous_stop'] = current_stop if current_stop else new_stop_f
+                            trade_dict['ts_previous_level'] = previous_level
+
+                            redis_client.setex(guardian_key, 7*24*3600, json.dumps(trade_dict))
+                            redis_updated = True
+                            print(f"✅ Redis update succeeded on retry: {guardian_key} -> {new_stop_f}")
+            except Exception as retry_error:
+                print(f"❌ CRITICAL: Redis update failed on retry: {retry_error}")
+                print(f"   Binance updated successfully but Redis sync failed")
+                print(f"   Manual verification recommended for {user_id}/{symbol}")
+
+        # Retornar respuesta enriquecida
+        return {
+            "success": True,
+            "direction": direction,
+            "stop": new_stop_f,
+            "level_applied": level_name,
+            "previous_stop": current_stop,
+            "adjustment_confirmed": True,
+            "redis_updated": redis_updated,
+            "timestamp": time.time()
+        }
 
     except Exception as e:
         print("Exception in adjust_stop_only_for_open_position:", e)

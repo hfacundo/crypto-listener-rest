@@ -102,6 +102,7 @@ class GuardianRequest(BaseModel):
     target: Optional[float] = Field(default=None, description="New target price")
     user_id: Optional[str] = Field(default=None, description="Specific user (optional)")
     market_context: Optional[Dict[str, Any]] = Field(default=None, description="Market context data")
+    level_metadata: Optional[Dict[str, Any]] = Field(default=None, description="Trailing stop level metadata (level_name, threshold_pct, previous_level)")
 
     class Config:
         json_schema_extra = {

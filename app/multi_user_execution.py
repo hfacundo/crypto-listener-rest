@@ -74,7 +74,11 @@ def execute_guardian_action_for_user(user_id: str, symbol: str, action: str,
                 }
 
             stop_price = float(stop_price)
-            result = adjust_stop_only_for_open_position(symbol_upper, stop_price, client, user_id)
+
+            # Extraer level_metadata si está disponible (trailing stop multinivel)
+            level_metadata = message.get("level_metadata")
+
+            result = adjust_stop_only_for_open_position(symbol_upper, stop_price, client, user_id, level_metadata)
             action_type = "ADJUST"
 
         elif action == "half_close":
