@@ -94,24 +94,35 @@ class TradeRequest(BaseModel):
             }
         }
 
-class GuardianRequest(BaseModel):
-    """Request model for guardian actions"""
-    symbol: str = Field(..., description="Trading pair")
-    action: str = Field(..., description="Action: close, adjust, half_close")
-    stop: Optional[float] = Field(default=None, description="New stop price (for adjust)")
-    target: Optional[float] = Field(default=None, description="New target price")
-    user_id: Optional[str] = Field(default=None, description="Specific user (optional)")
-    market_context: Optional[Dict[str, Any]] = Field(default=None, description="Market context data")
-    level_metadata: Optional[Dict[str, Any]] = Field(default=None, description="Trailing stop level metadata (level_name, threshold_pct, previous_level)")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "symbol": "BTCUSDT",
-                "action": "close",
-                "user_id": "User_1"
-            }
-        }
+# ============================================================================
+# DEPRECATED: GuardianRequest model - NO LONGER USED
+# ============================================================================
+# This model was used by the /guardian endpoint which proxied guardian actions
+# to Binance. The new unified_guardian.py in crypto-guardian accesses Binance
+# directly, eliminating the HTTP overhead and simplifying the architecture.
+#
+# Removed: 2025-01-29
+# Reason: unified_guardian.py replaces dual monitor system and accesses Binance directly
+# ============================================================================
+#
+# class GuardianRequest(BaseModel):
+#     """Request model for guardian actions"""
+#     symbol: str = Field(..., description="Trading pair")
+#     action: str = Field(..., description="Action: close, adjust, half_close")
+#     stop: Optional[float] = Field(default=None, description="New stop price (for adjust)")
+#     target: Optional[float] = Field(default=None, description="New target price")
+#     user_id: Optional[str] = Field(default=None, description="Specific user (optional)")
+#     market_context: Optional[Dict[str, Any]] = Field(default=None, description="Market context data")
+#     level_metadata: Optional[Dict[str, Any]] = Field(default=None, description="Trailing stop level metadata (level_name, threshold_pct, previous_level)")
+#
+#     class Config:
+#         json_schema_extra = {
+#             "example": {
+#                 "symbol": "BTCUSDT",
+#                 "action": "close",
+#                 "user_id": "User_1"
+#             }
+#         }
 
 # Core trade processing logic (from Lambda)
 def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
@@ -404,163 +415,30 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
     )
 
 
-@app.post("/guardian")
-async def guardian_action(guardian: GuardianRequest) -> JSONResponse:
-    """
-    Ejecuta una acción del guardian (close, adjust, half_close) inmediatamente.
-    """
-    start_time = time.time()
-
-    print(f"🚨 Guardian request: {guardian.action} on {guardian.symbol}")
-
-    symbol = guardian.symbol
-    action = guardian.action.lower()
-
-    # Validaciones básicas
-    if action not in ["close", "adjust", "half_close"]:
-        raise HTTPException(status_code=400, detail="Invalid action. Must be: close, adjust, or half_close")
-
-    if action == "adjust" and guardian.stop is None:
-        raise HTTPException(status_code=400, detail="'adjust' requires 'stop' parameter")
-
-    # Detectar mensaje enhanced vs legacy
-    market_context = guardian.market_context or {}
-    is_enhanced_message = bool(market_context.get("trigger_price"))
-
-    if is_enhanced_message:
-        print(f"📊 Enhanced message with trigger_price: {market_context.get('trigger_price')}")
-
-    # Determinar usuarios activos
-    target_user_id = guardian.user_id
-
-    if target_user_id:
-        # Modo específico: solo este usuario
-        print(f"🎯 Guardian action for specific user: {target_user_id}")
-
-        if target_user_id not in USERS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"User {target_user_id} not in this environment ({DEPLOYMENT_ENV})"
-            )
-
-        # Verificar guardian habilitado
-        rules = get_rules(target_user_id, STRATEGY)
-        if not rules.get("use_guardian", True):
-            raise HTTPException(status_code=400, detail=f"{target_user_id} has guardian disabled")
-
-        # Reglas específicas por acción
-        if action == "close" and rules.get("use_guardian_half", False):
-            raise HTTPException(status_code=400, detail=f"{target_user_id} uses half_close mode")
-        elif action == "half_close" and not rules.get("use_guardian_half", False):
-            raise HTTPException(status_code=400, detail=f"{target_user_id} doesn't use half_close mode")
-
-        active_users = [target_user_id]
-    else:
-        # Modo legacy: todos los usuarios con guardian habilitado
-        print(f"📢 Guardian action for all users")
-        active_users = []
-        for user_id in USERS:
-            try:
-                rules = get_rules(user_id, STRATEGY)
-                if not rules.get("use_guardian", True):
-                    print(f"⛔ {user_id} has guardian disabled")
-                    continue
-
-                # Reglas específicas por acción
-                if action == "close" and rules.get("use_guardian_half", False):
-                    print(f"⏭️ {user_id} uses half_close mode, skipping regular close")
-                    continue
-                elif action == "half_close" and not rules.get("use_guardian_half", False):
-                    print(f"⏭️ {user_id} doesn't use half_close mode")
-                    continue
-
-                active_users.append(user_id)
-            except Exception as e:
-                print(f"⛔ Error checking rules for {user_id}: {e}")
-                continue
-
-    if not active_users:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No active users for guardian action {action} on {symbol}"
-        )
-
-    print(f"👥 Active users for {action}: {active_users}")
-
-    # Ejecutar guardian action
-    try:
-        message = guardian.model_dump()
-
-        if is_enhanced_message:
-            # Usar el nuevo sistema optimizado
-            execution_summary = execute_multi_user_guardian_action(active_users, symbol, message)
-
-            success_rate = execution_summary.get("success_rate", 0)
-            total_time = execution_summary.get("total_execution_time_sec", 0)
-            print(f"📊 Guardian execution completed: {success_rate:.1f}% success in {total_time:.3f}s")
-
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "completed",
-                    "action": action,
-                    "symbol": symbol,
-                    "execution_summary": execution_summary
-                }
-            )
-        else:
-            # Fallback: lógica legacy
-            print("⚠️ Using legacy execution for non-enhanced message")
-
-            new_stop = guardian.stop
-            new_target = guardian.target
-            results = []
-
-            for user_id in active_users:
-                try:
-                    client = get_binance_client_for_user(user_id)
-
-                    if action == "close":
-                        print(f"🚨 [legacy] Closing {symbol} for {user_id}")
-                        res = close_position_and_cancel_orders(symbol, client, user_id, STRATEGY)
-                        results.append({"user_id": user_id, "success": True, "result": res})
-
-                    elif action == "adjust":
-                        stop_price = float(new_stop)
-                        print(f"🚨 [legacy] Adjusting STOP {symbol} for {user_id} -> {stop_price}")
-                        res = adjust_stop_only_for_open_position(symbol.upper(), stop_price, client, user_id)
-                        results.append({"user_id": user_id, "success": True, "result": res})
-
-                    elif action == "half_close":
-                        print(f"💰 [legacy] HALF-CLOSE {symbol} for {user_id}")
-                        res = half_close_and_move_be(symbol.upper(), client, user_id)
-                        results.append({"user_id": user_id, "success": True, "result": res})
-
-                except Exception as e:
-                    print(f"❌ Legacy execution failed for {user_id}: {e}")
-                    results.append({"user_id": user_id, "success": False, "error": str(e)})
-
-            execution_time = time.time() - start_time
-            successful = sum(1 for r in results if r.get("success"))
-
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "completed",
-                    "action": action,
-                    "symbol": symbol,
-                    "successful": successful,
-                    "failed": len(results) - successful,
-                    "execution_time_sec": round(execution_time, 3),
-                    "results": results
-                }
-            )
-
-    except Exception as e:
-        print(f"❌ Guardian execution failed: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Guardian execution failed: {str(e)}")
+# ============================================================================
+# DEPRECATED: /guardian endpoint - NO LONGER USED
+# ============================================================================
+# This endpoint was used by the dual monitor system (hot_trailing_monitor.py +
+# guardian_service.py) to proxy guardian actions to Binance via HTTP.
+#
+# The new unified_guardian.py in crypto-guardian accesses Binance directly,
+# eliminating this HTTP proxy layer and reducing latency by 20-50ms.
+#
+# Architecture change:
+# OLD: guardian → HTTP POST /guardian → crypto-listener-rest → Binance
+# NEW: unified_guardian → Binance (direct)
+#
+# Removed: 2025-01-29
+# Reason: unified_guardian.py replaces dual monitor system
+# ============================================================================
+#
+# @app.post("/guardian")
+# async def guardian_action(guardian: GuardianRequest) -> JSONResponse:
+#     """
+#     Ejecuta una acción del guardian (close, adjust, half_close) inmediatamente.
+#     """
+#     ... [157 lines of code removed] ...
+#     # See git history for full endpoint implementation
 
 
 @app.get("/health")
