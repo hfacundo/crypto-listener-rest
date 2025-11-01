@@ -545,7 +545,12 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                     # Guardar previous_level antes de actualizar
                     previous_level_from_redis = trade_dict.get('ts_level_applied')
 
-                    # Actualizar campos básicos
+                    # CRÍTICO: Preservar original_stop si ya existe, o guardarlo ahora
+                    if 'original_stop' not in trade_dict:
+                        # Primera vez: guardar el stop actual como original
+                        trade_dict['original_stop'] = current_stop if current_stop else new_stop_f
+
+                    # Actualizar campos básicos (NUNCA modificar original_stop)
                     trade_dict['stop'] = new_stop_f
                     trade_dict['stop_loss'] = new_stop_f  # Compatibilidad con light_check.py y decisions.py
 
@@ -579,7 +584,11 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                         if trade_data:
                             trade_dict = json.loads(trade_data)
 
-                            # Actualizar todos los campos
+                            # CRÍTICO: Preservar original_stop si ya existe
+                            if 'original_stop' not in trade_dict:
+                                trade_dict['original_stop'] = current_stop if current_stop else new_stop_f
+
+                            # Actualizar todos los campos (NUNCA modificar original_stop)
                             trade_dict['stop'] = new_stop_f
                             trade_dict['stop_loss'] = new_stop_f
                             trade_dict['ts_level_applied'] = level_name

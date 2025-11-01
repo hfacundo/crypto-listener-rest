@@ -313,6 +313,7 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
                                 "entry": entry_price,
                                 "stop": stop_loss,           # Para trailing_stop.py y guardian_service.py
                                 "stop_loss": stop_loss,      # Para light_check.py y decisions.py (compatibilidad)
+                                "original_stop": stop_loss,  # CRÍTICO: Preservar stop original para cálculo correcto de R
                                 "target": target_price,
                                 "user_id": user_id,
                                 "strategy": strategy,
