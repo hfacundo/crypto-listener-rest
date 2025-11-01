@@ -203,7 +203,7 @@ class UserRiskProfileValidator:
                     symbol=symbol,
                     direction=direction,
                     current_price=entry_price,
-                    lookback_hours=config.get("cooldown_after_stop_hours", 48),
+                    lookback_hours=config.get("cooldown_after_stop_hours", 8),  # Cooldown de 8h por defecto
                     min_price_change_pct=config.get("min_price_change_pct", 2.0)
                 )
 
