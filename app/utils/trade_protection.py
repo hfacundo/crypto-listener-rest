@@ -177,17 +177,25 @@ class TradeProtectionSystem:
         symbol: str,
         direction: str,
         current_price: float,
+        cooldown_hours: int = 6,
         lookback_hours: int = 48,
         min_price_change_pct: float = 2.0
     ) -> Tuple[bool, Optional[str]]:
         """
         Bloquea trade si:
-        1. Mismo símbolo+dirección falló recientemente (últimas 48h)
-        2. Precio no ha cambiado significativamente (>2%)
+        1. Mismo símbolo+dirección falló recientemente (últimas lookback_hours)
+        2. NO han pasado cooldown_hours desde el stop loss
+        3. EXCEPCIÓN: Si precio cambió significativamente (>min_price_change_pct), permitir
 
         Args:
             user_id: ID del usuario
             strategy: Nombre de la estrategia
+            symbol: Símbolo del trade (ej: "BTCUSDT")
+            direction: Dirección (ej: "BUY", "SELL")
+            current_price: Precio actual del trade
+            cooldown_hours: Horas mínimas de espera después de un stop loss (default: 6h)
+            lookback_hours: Ventana de tiempo para buscar stops previos (default: 48h)
+            min_price_change_pct: % de cambio de precio para override automático (default: 2.0%)
 
         Returns:
             (should_block, reason)
@@ -196,6 +204,7 @@ class TradeProtectionSystem:
         SELECT
             entry_price,
             entry_time,
+            exit_time,
             pnl_pct,
             exit_reason
         FROM trade_history
@@ -218,23 +227,37 @@ class TradeProtectionSystem:
                 if not failed_trade:
                     return False, None  # No hay trades fallidos recientes
 
-                # Calcular cambio de precio
+                # ═══════════════════════════════════════════════════════════
+                # VALIDACIÓN 1: Tiempo transcurrido desde el stop loss
+                # ═══════════════════════════════════════════════════════════
+                exit_time = failed_trade['exit_time'] or failed_trade['entry_time']
+                time_since_stop = datetime.now() - exit_time
+                hours_since_stop = time_since_stop.total_seconds() / 3600
+
+                # ═══════════════════════════════════════════════════════════
+                # VALIDACIÓN 2: Cambio de precio (override)
+                # ═══════════════════════════════════════════════════════════
                 failed_price = float(failed_trade['entry_price'])
                 price_change_pct = abs((current_price - failed_price) / failed_price * 100)
 
-                if price_change_pct < min_price_change_pct:
-                    # Calcular tiempo transcurrido
-                    time_since = datetime.now() - failed_trade['entry_time']
-                    hours_ago = time_since.total_seconds() / 3600
+                # Si precio cambió significativamente, permitir trade (override)
+                if price_change_pct >= min_price_change_pct:
+                    return False, None  # Override: precio cambió suficiente
 
+                # ═══════════════════════════════════════════════════════════
+                # BLOQUEAR: No pasó suficiente tiempo Y precio no cambió
+                # ═══════════════════════════════════════════════════════════
+                if hours_since_stop < cooldown_hours:
+                    hours_remaining = cooldown_hours - hours_since_stop
                     reason = (
-                        f"⛔ ANTI-REPETITION: {symbol} {direction} hit stop {hours_ago:.1f}h ago "
-                        f"at ${failed_price:.6f} (PnL: {failed_trade['pnl_pct']:.2f}%). "
-                        f"Current price ${current_price:.6f} changed only {price_change_pct:.2f}% "
-                        f"(< {min_price_change_pct}% threshold)"
+                        f"⛔ ANTI-REPETITION COOLDOWN: {symbol} {direction} hit stop {hours_since_stop:.1f}h ago "
+                        f"(${failed_price:.6f}, PnL: {failed_trade['pnl_pct']:.2f}%). "
+                        f"Cooldown: {cooldown_hours}h | Remaining: {hours_remaining:.1f}h. "
+                        f"Price change: {price_change_pct:.2f}% (< {min_price_change_pct}% threshold)"
                     )
                     return True, reason
 
+                # Cooldown expirado, permitir trade
                 return False, None
 
         except Exception as e:
