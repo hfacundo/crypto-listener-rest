@@ -11,7 +11,7 @@ Usa PostgreSQL para persistencia (mejor que Redis para análisis histórico).
 
 import psycopg2
 import psycopg2.extras
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 import os
 
@@ -206,22 +206,24 @@ class TradeProtectionSystem:
             entry_time,
             exit_time,
             pnl_pct,
-            exit_reason
+            exit_reason,
+            updated_at
         FROM trade_history
         WHERE user_id = %s
           AND strategy = %s
           AND symbol = %s
           AND direction = %s
           AND exit_reason = 'stop_hit'
-          AND entry_time > NOW() - INTERVAL '%s hours'
-        ORDER BY entry_time DESC
+          AND (exit_time > NOW() - INTERVAL '%s hours'
+               OR (exit_time IS NULL AND updated_at > NOW() - INTERVAL '%s hours'))
+        ORDER BY COALESCE(exit_time, updated_at) DESC
         LIMIT 1
         """
 
         conn = self._get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                cur.execute(query, (user_id, strategy, symbol, direction, lookback_hours))
+                cur.execute(query, (user_id, strategy, symbol, direction, lookback_hours, lookback_hours))
                 failed_trade = cur.fetchone()
 
                 if not failed_trade:
@@ -230,8 +232,9 @@ class TradeProtectionSystem:
                 # ═══════════════════════════════════════════════════════════
                 # VALIDACIÓN 1: Tiempo transcurrido desde el stop loss
                 # ═══════════════════════════════════════════════════════════
-                exit_time = failed_trade['exit_time'] or failed_trade['entry_time']
-                time_since_stop = datetime.now() - exit_time
+                # Usar exit_time si existe, sino updated_at, sino entry_time como último fallback
+                exit_time = failed_trade['exit_time'] or failed_trade.get('updated_at') or failed_trade['entry_time']
+                time_since_stop = datetime.now(timezone.utc) - exit_time
                 hours_since_stop = time_since_stop.total_seconds() / 3600
 
                 # ═══════════════════════════════════════════════════════════
