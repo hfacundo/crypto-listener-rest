@@ -1,12 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Read(//mnt/d/Development/python/**)",
-      "Bash(git log:*)",
-      "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nRelajar aún más filtros de liquidez para capital $500\n\nAjustes ultra-permisivos para aprovechar oportunidades con capital pequeño:\n- min_depth_base: 500 → 100 USDT (reducción del 80%)\n- depth_pct: 5% → 10% (rango ampliado al doble)\n\nNuevos tiers de liquidez:\n- Tier 1: 10k USDT @ 2%  (antes 30k @ 1%)\n- Tier 2: 5k USDT @ 5%   (antes 15k @ 2%)\n- Tier 3: 1k USDT @ 8%   (antes 5k @ 3%)\n- Tier 4: 100 USDT @ 10% (antes 500 @ 5%) - fallback ultra-permisivo\n\nCon capital de $500 y risk_pct típico de 2%:\n- Capital por trade: ~$10\n- Con leverage 10-20x: posiciones de $100-$200\n- Liquidez mínima 100 USDT es suficiente\n\nArchivos modificados:\n- app/utils/constants.py\n- app/utils/binance/dynamic_rules.py\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
-      "Bash(find:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nFix trailing stop no activándose - mismatch en unidades de progreso\n\nProblema identificado:\n- light_check.py calculaba progreso 0-1 (% del camino entry→target)\n- trailing_stop.py esperaba progreso en múltiplos de R (riesgo)\n- Con RR != 1:1, el trailing stop se activaba a la distancia incorrecta\n\nEjemplo del problema con RR 2:1:\n- Entry=100, Stop=95 (R=5), Target=110 (reward=10)\n- Mark=107 → Progreso 0-1 = 0.7, Progreso R = 1.4R\n- Con threshold 0.7, activaba a 70% del camino (1.4R) en vez de 0.7R (35%)\n\nSolución implementada:\n1. Nueva función compute_progress_R() que calcula progreso en múltiplos de R\n2. light_features_5m() ahora usa compute_progress_R() en vez de compute_progress()\n3. compute_progress() marcada como DEPRECATED\n\nImpacto:\n- Antes: RR > 1 activaba trailing TARDE, RR < 1 activaba PRONTO\n- Ahora: Trailing activa consistentemente a 0.7R sin importar el RR\n\nTambién identificado:\n- Guardian no está corriendo → sin monitoreo de trades activo\n\nArchivos modificados:\n- app/light_check.py\n- TRAILING_STOP_FIX.md (documentación completa)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(psql:*)"
     ],
     "deny": [],
     "ask": []

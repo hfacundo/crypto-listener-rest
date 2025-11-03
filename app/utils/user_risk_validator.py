@@ -191,8 +191,37 @@ class UserRiskProfileValidator:
                 return False, f"SCHEDULE: {schedule_reason}", validation_results
 
         # ═══════════════════════════════════════════════════════════════
-        # VALIDACIÓN 4: Anti-Repetition (cooldown por símbolo)
+        # VALIDACIÓN 4A: Recent Trade Validator (optimizado, sin Binance)
         # ═══════════════════════════════════════════════════════════════
+        # NUEVO: Validación rápida que NO llama a Binance
+        # Confía en que crypto-guardian actualiza BD en tiempo real vía WebSocket
+        try:
+            from app.utils.recent_trade_validator import get_recent_trade_validator
+
+            recent_validator = get_recent_trade_validator()
+            cooldown_hours = self.rules.get("anti_repetition", {}).get("cooldown_after_stop_hours", 6)
+
+            can_trade, rejection_reason = recent_validator.should_allow_trade(
+                user_id=self.user_id,
+                strategy=self.strategy,
+                symbol=symbol,
+                cooldown_hours=cooldown_hours
+            )
+
+            if not can_trade:
+                validation_results["failed_at"] = "recent_trade_cooldown"
+                validation_results["reason"] = rejection_reason
+                logger.info(f"🚫 {self.user_id} - Recent trade cooldown: {symbol} → {rejection_reason}")
+                return False, f"RECENT_TRADE_COOLDOWN: {rejection_reason}", validation_results
+
+        except Exception as e:
+            logger.error(f"Error checking recent trade validator: {e}")
+            # Si falla, continuar con validación legacy (anti-repetition)
+
+        # ═══════════════════════════════════════════════════════════════
+        # VALIDACIÓN 4B: Anti-Repetition (legacy fallback)
+        # ═══════════════════════════════════════════════════════════════
+        # Mantener como fallback en caso de que recent_trade_validator falle
         if self.protection_system and self.rules.get("anti_repetition", {}).get("enabled", False):
             config = self.rules["anti_repetition"]
 
