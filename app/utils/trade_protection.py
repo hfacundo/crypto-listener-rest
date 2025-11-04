@@ -234,6 +234,11 @@ class TradeProtectionSystem:
                 # ═══════════════════════════════════════════════════════════
                 # Usar exit_time si existe, sino updated_at, sino entry_time como último fallback
                 exit_time = failed_trade['exit_time'] or failed_trade.get('updated_at') or failed_trade['entry_time']
+
+                # Asegurar que exit_time tiene timezone
+                if exit_time.tzinfo is None:
+                    exit_time = exit_time.replace(tzinfo=timezone.utc)
+
                 time_since_stop = datetime.now(timezone.utc) - exit_time
                 hours_since_stop = time_since_stop.total_seconds() / 3600
 
