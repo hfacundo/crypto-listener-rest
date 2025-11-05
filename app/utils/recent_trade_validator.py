@@ -156,8 +156,39 @@ class RecentTradeValidator:
         # ===================================================================
         # Esto significa que el trade se cerró pero BD aún no se actualizó
         # (WebSocket lo procesará en < 1 segundo)
+        #
+        # Race condition: crypto-guardian eliminó de Redis pero aún no actualizó PostgreSQL
+        # Solución: Buscar si hay un trade CERRADO recientemente
 
-        # Verificar cuánto tiempo ha pasado desde entry
+        recent_closed_trade = self._get_recent_closed_trade(user_id, strategy, symbol_lower, minutes=30)
+
+        if recent_closed_trade:
+            # Hay un trade cerrado recientemente, verificar si ganó o perdió
+            exit_reason = recent_closed_trade['exit_reason']
+            exit_time = recent_closed_trade['exit_time']
+
+            # Asegurar que exit_time es timezone-aware
+            if exit_time.tzinfo is None:
+                exit_time = exit_time.replace(tzinfo=timezone.utc)
+
+            if exit_reason == 'stop_hit':
+                # Trade perdedor → Aplicar cooldown para evitar revenge trading
+                hours_since_close = (datetime.now(timezone.utc) - exit_time).total_seconds() / 3600
+
+                if hours_since_close < cooldown_hours:
+                    return False, (
+                        f"Stop hit {hours_since_close:.1f}h ago for {symbol} "
+                        f"(cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_close:.1f}h)"
+                    )
+
+            # Trade ganador (target_hit, manual_close, guardian_close) o cooldown expiró → Permitir
+            logger.info(
+                f"✅ Recent closed trade found for {user_id}/{symbol}: {exit_reason} "
+                f"({self._format_time_ago(exit_time)}) - Allowing new trade"
+            )
+            return True, f"OK (last trade: {exit_reason}, closed {self._format_time_ago(exit_time)})"
+
+        # No hay trade cerrado reciente, verificar cuánto tiempo ha pasado desde entry
         entry_time = last_trade['entry_time']
         if entry_time.tzinfo is None:
             entry_time = entry_time.replace(tzinfo=timezone.utc)
@@ -258,6 +289,70 @@ class RecentTradeValidator:
 
         except Exception as e:
             logger.error(f"❌ Error querying last trade from DB: {e}")
+            return None
+
+        finally:
+            if conn:
+                conn.close()
+
+    def _get_recent_closed_trade(
+        self,
+        user_id: str,
+        strategy: str,
+        symbol: str,
+        minutes: int = 30
+    ) -> Optional[Dict]:
+        """
+        Busca trades cerrados recientemente (últimos N minutos).
+
+        Esto es útil para detectar race conditions donde:
+        - crypto-guardian ya eliminó el trade de Redis
+        - Pero la consulta de "último trade" aún muestra exit_reason='active'
+        - Necesitamos buscar si hay un trade MÁS RECIENTE con exit_time
+
+        Args:
+            user_id: ID del usuario
+            strategy: Estrategia
+            symbol: Símbolo del trade (lowercase)
+            minutes: Ventana de tiempo para buscar (default: 30 min)
+
+        Returns:
+            Dict con campos del trade cerrado o None si no existe
+        """
+        query = """
+        SELECT
+            id,
+            entry_time,
+            entry_price,
+            exit_time,
+            exit_price,
+            exit_reason,
+            stop_price,
+            target_price
+        FROM trade_history
+        WHERE user_id = %s
+          AND strategy = %s
+          AND symbol = %s
+          AND exit_time IS NOT NULL
+          AND exit_time >= NOW() - INTERVAL '%s minutes'
+        ORDER BY exit_time DESC
+        LIMIT 1
+        """
+
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                cur.execute(query, (user_id, strategy, symbol, minutes))
+                result = cur.fetchone()
+
+                if result:
+                    return dict(result)
+                else:
+                    return None
+
+        except Exception as e:
+            logger.error(f"❌ Error querying recent closed trade from DB: {e}")
             return None
 
         finally:

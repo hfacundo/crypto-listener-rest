@@ -186,7 +186,8 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
 
         tier_info = f" TIER {tier}" if tier else ""
         test_info = f" 🧪 TEST MODE (LEV {test_leverage}x)" if is_test and test_leverage else (" 🧪 TEST MODE" if is_test else "")
-        print(f"{log_prefix} {symbol} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}{tier_info}{test_info}")
+        direction_str = direction.upper() if direction else "UNKNOWN"
+        print(f"{log_prefix} {symbol} | {direction_str} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}{tier_info}{test_info}")
 
         # 🧪 TEST MODE: Si es test, solo procesar para usuarios en la lista
         if is_test and test_users_list and user_id not in test_users_list:
