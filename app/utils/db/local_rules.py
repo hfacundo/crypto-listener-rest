@@ -109,6 +109,73 @@ LOCAL_RULES = {
                 "enabled": False,  # Solo trailing stop, NO cierres parciales
                 "levels": []
             }
+        },
+
+        # ═══════════════════════════════════════════════════════════════
+        # archer_model - ML-based strategy (simplified validation)
+        # ═══════════════════════════════════════════════════════════════
+        "archer_model": {
+            "enabled": True,
+            "min_rr": 1.0,
+            "min_probability": 50,
+            "risk_pct": 1.0,
+            "max_leverage": 30,
+            "max_trades_open": 3,
+            "count_method": "positions",
+            "use_guardian": True,
+            "use_guardian_half": False,
+
+            "anti_repetition": {
+                "enabled": True,
+                "cooldown_after_stop_hours": 24,
+                "lookback_hours": 48,
+                "min_price_change_pct": 3.0,
+                "mode": "per_symbol"
+            },
+            "circuit_breaker": {
+                "enabled": True,
+                "max_drawdown_pct": -15.0,
+                "max_consecutive_losses": 3,
+                "pause_duration_hours": 48,
+                "recovery_target_pct": 60,
+                "auto_reset": True
+            },
+            "daily_loss_limits": {
+                "enabled": True,
+                "max_daily_loss_pct": 3.0,
+                "pause_duration_hours": 24,
+                "reset_time_utc": "00:00"
+            },
+            "schedule": {
+                "enabled": False,
+                "timezone": "UTC",
+                "allowed_periods": []
+            },
+            "symbol_blacklist": {
+                "enabled": True,
+                "min_trades_for_evaluation": 8,
+                "min_win_rate_pct": 45.0,
+                "max_cumulative_loss_pct": -12.0,
+                "lookback_days": 60,
+                "auto_blacklist": True
+            },
+            "portfolio_protection": {
+                "enabled": True,
+                "max_correlation_score": 0.75,
+                "max_sector_exposure_pct": 50,
+                "max_portfolio_drawdown_pct": 12,
+                "pause_on_high_risk": True
+            },
+            "max_trades_protection": {
+                "enabled": True,
+                "trigger_losing_trades": 2,
+                "cooldown_hours": 6,
+                "losing_threshold_R": -0.3
+            },
+            "profit_taking": {
+                "enabled": False,
+                "levels": []
+            }
         }
     },
 
@@ -196,6 +263,73 @@ LOCAL_RULES = {
             # ═══ 💰 PROFIT TAKING (DESHABILITADO - se usa trailing stop) ═══
             "profit_taking": {
                 "enabled": False,  # Solo trailing stop, NO cierres parciales
+                "levels": []
+            }
+        },
+
+        # ═══════════════════════════════════════════════════════════════
+        # archer_model - ML-based strategy (simplified validation)
+        # ═══════════════════════════════════════════════════════════════
+        "archer_model": {
+            "enabled": True,
+            "min_rr": 1.0,
+            "min_probability": 50,
+            "risk_pct": 1.0,
+            "max_leverage": 30,
+            "max_trades_open": 3,
+            "count_method": "positions",
+            "use_guardian": True,
+            "use_guardian_half": False,
+
+            "anti_repetition": {
+                "enabled": True,
+                "cooldown_after_stop_hours": 24,
+                "lookback_hours": 48,
+                "min_price_change_pct": 3.0,
+                "mode": "per_symbol"
+            },
+            "circuit_breaker": {
+                "enabled": True,
+                "max_drawdown_pct": -15.0,
+                "max_consecutive_losses": 3,
+                "pause_duration_hours": 48,
+                "recovery_target_pct": 60,
+                "auto_reset": True
+            },
+            "daily_loss_limits": {
+                "enabled": True,
+                "max_daily_loss_pct": 3.0,
+                "pause_duration_hours": 24,
+                "reset_time_utc": "00:00"
+            },
+            "schedule": {
+                "enabled": False,
+                "timezone": "UTC",
+                "allowed_periods": []
+            },
+            "symbol_blacklist": {
+                "enabled": True,
+                "min_trades_for_evaluation": 8,
+                "min_win_rate_pct": 45.0,
+                "max_cumulative_loss_pct": -12.0,
+                "lookback_days": 60,
+                "auto_blacklist": True
+            },
+            "portfolio_protection": {
+                "enabled": True,
+                "max_correlation_score": 0.75,
+                "max_sector_exposure_pct": 50,
+                "max_portfolio_drawdown_pct": 12,
+                "pause_on_high_risk": True
+            },
+            "max_trades_protection": {
+                "enabled": True,
+                "trigger_losing_trades": 2,
+                "cooldown_hours": 6,
+                "losing_threshold_R": -0.3
+            },
+            "profit_taking": {
+                "enabled": False,
                 "levels": []
             }
         }
@@ -289,6 +423,73 @@ LOCAL_RULES = {
                 "enabled": False,  # Solo trailing stop, NO cierres parciales
                 "levels": []
             }
+        },
+
+        # ═══════════════════════════════════════════════════════════════
+        # archer_model - ML-based strategy (simplified validation)
+        # ═══════════════════════════════════════════════════════════════
+        "archer_model": {
+            "enabled": True,
+            "min_rr": 1.0,
+            "min_probability": 40,  # Más permisivo (moderado)
+            "risk_pct": 1.0,
+            "max_leverage": 40,
+            "max_trades_open": 12,  # Más trades (moderado)
+            "count_method": "positions",
+            "use_guardian": True,
+            "use_guardian_half": False,
+
+            "anti_repetition": {
+                "enabled": True,
+                "cooldown_after_stop_hours": 8,  # Más corto (moderado)
+                "lookback_hours": 48,
+                "min_price_change_pct": 2.0,  # Más permisivo (moderado)
+                "mode": "per_symbol"
+            },
+            "circuit_breaker": {
+                "enabled": True,
+                "max_drawdown_pct": -25.0,  # Más tolerante (moderado)
+                "max_consecutive_losses": 4,
+                "pause_duration_hours": 24,
+                "recovery_target_pct": 50,
+                "auto_reset": True
+            },
+            "daily_loss_limits": {
+                "enabled": True,
+                "max_daily_loss_pct": 6.0,  # Más tolerante (moderado)
+                "pause_duration_hours": 12,
+                "reset_time_utc": "00:00"
+            },
+            "schedule": {
+                "enabled": False,
+                "timezone": "UTC",
+                "allowed_periods": []
+            },
+            "symbol_blacklist": {
+                "enabled": True,
+                "min_trades_for_evaluation": 10,
+                "min_win_rate_pct": 40.0,  # Más permisivo (moderado)
+                "max_cumulative_loss_pct": -15.0,  # Más tolerante (moderado)
+                "lookback_days": 60,
+                "auto_blacklist": True
+            },
+            "portfolio_protection": {
+                "enabled": True,
+                "max_correlation_score": 0.80,  # Más permisivo (moderado)
+                "max_sector_exposure_pct": 60,
+                "max_portfolio_drawdown_pct": 15,
+                "pause_on_high_risk": True
+            },
+            "max_trades_protection": {
+                "enabled": True,
+                "trigger_losing_trades": 4,  # Más tolerante (moderado)
+                "cooldown_hours": 4,
+                "losing_threshold_R": -0.5
+            },
+            "profit_taking": {
+                "enabled": False,
+                "levels": []
+            }
         }
     },
 
@@ -378,6 +579,73 @@ LOCAL_RULES = {
             # ═══ 💰 PROFIT TAKING (DESHABILITADO - se usa trailing stop) ═══
             "profit_taking": {
                 "enabled": False,  # Solo trailing stop, NO cierres parciales
+                "levels": []
+            }
+        },
+
+        # ═══════════════════════════════════════════════════════════════
+        # archer_model - ML-based strategy (simplified validation)
+        # ═══════════════════════════════════════════════════════════════
+        "archer_model": {
+            "enabled": True,
+            "min_rr": 1.0,
+            "min_probability": 40,  # Muy permisivo (agresivo)
+            "risk_pct": 1.0,
+            "max_leverage": 50,  # Máximo apalancamiento (agresivo)
+            "max_trades_open": 15,  # Muchos trades (agresivo)
+            "count_method": "positions",
+            "use_guardian": True,
+            "use_guardian_half": False,
+
+            "anti_repetition": {
+                "enabled": True,
+                "cooldown_after_stop_hours": 4,  # Muy corto (agresivo)
+                "lookback_hours": 48,
+                "min_price_change_pct": 1.5,  # Muy permisivo (agresivo)
+                "mode": "per_symbol"
+            },
+            "circuit_breaker": {
+                "enabled": True,
+                "max_drawdown_pct": -30.0,  # Muy tolerante (agresivo)
+                "max_consecutive_losses": 5,
+                "pause_duration_hours": 12,  # Pausa corta (agresivo)
+                "recovery_target_pct": 40,
+                "auto_reset": True
+            },
+            "daily_loss_limits": {
+                "enabled": True,
+                "max_daily_loss_pct": 8.0,  # Muy tolerante (agresivo)
+                "pause_duration_hours": 6,
+                "reset_time_utc": "00:00"
+            },
+            "schedule": {
+                "enabled": False,
+                "timezone": "UTC",
+                "allowed_periods": []
+            },
+            "symbol_blacklist": {
+                "enabled": True,
+                "min_trades_for_evaluation": 12,
+                "min_win_rate_pct": 35.0,  # Muy permisivo (agresivo)
+                "max_cumulative_loss_pct": -20.0,  # Muy tolerante (agresivo)
+                "lookback_days": 60,
+                "auto_blacklist": True
+            },
+            "portfolio_protection": {
+                "enabled": True,
+                "max_correlation_score": 0.85,  # Muy permisivo (agresivo)
+                "max_sector_exposure_pct": 70,
+                "max_portfolio_drawdown_pct": 20,
+                "pause_on_high_risk": True
+            },
+            "max_trades_protection": {
+                "enabled": True,
+                "trigger_losing_trades": 7,  # Muy tolerante (agresivo)
+                "cooldown_hours": 2,
+                "losing_threshold_R": -0.8
+            },
+            "profit_taking": {
+                "enabled": False,
                 "levels": []
             }
         }

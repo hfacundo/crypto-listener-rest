@@ -306,28 +306,65 @@ class UserRiskProfileValidator:
                 return False, f"PORTFOLIO_PROTECTION: {portfolio_reason}", validation_results
 
         # ═══════════════════════════════════════════════════════════════
-        # VALIDACIÓN 9: SQS Evaluation (calidad de señal)
+        # VALIDACIÓN 9: Signal Quality Validation
         # ═══════════════════════════════════════════════════════════════
-        from app.utils.sqs_evaluator import SQSEvaluator
 
-        sqs_evaluator = SQSEvaluator(self.user_id, self.strategy)
-        # Pass tier from crypto-analyzer-redis (if provided) for synchronized validation
-        sqs_decision = sqs_evaluator.evaluate_trade(probability, sqs, rr, symbol, tier=tier)
+        # ✅ archer_model: Validación simple (min_probability + min_rr)
+        # ✅ archer_dual: Validación compleja (SQSEvaluator con probability + sqs)
 
-        if sqs_decision['action'] == 'reject':
-            validation_results["failed_at"] = "sqs_evaluation"
+        if self.strategy == "archer_model":
+            # Validación simplificada para ML: solo probability y RR thresholds
+            min_prob = self.rules.get("min_probability", 40)
+            min_rr = self.rules.get("min_rr", 1.0)
+
+            logger.info(f"🤖 {self.user_id} - archer_model validation: prob={probability}% (min={min_prob}%), rr={rr:.2f} (min={min_rr})")
+
+            # Check probability threshold
+            if probability < min_prob:
+                validation_results["failed_at"] = "probability_threshold"
+                reason = f"Probability {probability}% < {min_prob}% (user threshold)"
+                logger.warning(f"🚫 {self.user_id} - archer_model REJECTED: {reason}")
+                return False, f"PROBABILITY_REJECTED: {reason}", validation_results
+
+            # Check RR threshold
+            if rr < min_rr:
+                validation_results["failed_at"] = "rr_threshold"
+                reason = f"RR {rr:.2f} < {min_rr} (user threshold)"
+                logger.warning(f"🚫 {self.user_id} - archer_model REJECTED: {reason}")
+                return False, f"RR_REJECTED: {reason}", validation_results
+
+            # Approved - use fixed capital multiplier from risk_pct
+            logger.info(f"✅ {self.user_id} - archer_model APPROVED: prob={probability}% >= {min_prob}%, rr={rr:.2f} >= {min_rr}")
+            validation_results["capital_multiplier"] = 1.0  # Fixed for archer_model
+            validation_results["quality_grade"] = "ML_APPROVED"
+            validation_results["validation_method"] = "ml_threshold"
+
+        else:
+            # archer_dual: Use SQSEvaluator for complex validation
+            from app.utils.sqs_evaluator import SQSEvaluator
+
+            sqs_evaluator = SQSEvaluator(self.user_id, self.strategy)
+            sqs_decision = sqs_evaluator.evaluate_trade(probability, sqs, rr, symbol, tier=tier)
+
+            if sqs_decision['action'] == 'reject':
+                validation_results["failed_at"] = "sqs_evaluation"
+                validation_results["sqs_decision"] = sqs_decision
+                return False, f"SQS_REJECTED: {sqs_decision['reason']}", validation_results
+
+            # Approved - use capital multiplier from SQS evaluation
+            validation_results["capital_multiplier"] = sqs_decision.get("capital_multiplier", 1.0)
+            validation_results["quality_grade"] = sqs_decision.get("quality_grade", "UNKNOWN")
             validation_results["sqs_decision"] = sqs_decision
-            return False, f"SQS_REJECTED: {sqs_decision['reason']}", validation_results
+            validation_results["validation_method"] = "sqs_evaluation"
 
         # ═══════════════════════════════════════════════════════════════
         # ✅ TODAS LAS VALIDACIONES PASARON
         # ═══════════════════════════════════════════════════════════════
         validation_results["status"] = "APPROVED"
-        validation_results["capital_multiplier"] = sqs_decision.get("capital_multiplier", 1.0)
-        validation_results["quality_grade"] = sqs_decision.get("quality_grade", "UNKNOWN")
-        validation_results["sqs_decision"] = sqs_decision
 
-        logger.info(f"✅ {self.user_id} - Trade APPROVED for {symbol} ({sqs_decision.get('quality_grade')})")
+        # capital_multiplier y quality_grade ya fueron agregados en el bloque anterior
+        quality_grade = validation_results.get("quality_grade", "UNKNOWN")
+        logger.info(f"✅ {self.user_id} - Trade APPROVED for {symbol} ({quality_grade})")
 
         return True, "ALL_VALIDATIONS_PASSED", validation_results
 
