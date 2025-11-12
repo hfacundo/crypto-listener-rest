@@ -336,7 +336,21 @@ class UserRiskProfileValidator:
     # ═══════════════════════════════════════════════════════════════════
 
     def _check_daily_loss_limits(self) -> Tuple[bool, str, Dict]:
-        """Verifica si el usuario ha excedido su límite de pérdida diaria."""
+        """
+        Verifica si el usuario ha excedido su límite de pérdida diaria.
+
+        NUEVO: Calcula pérdida basada en BALANCE REAL, no en cambios de precio.
+
+        Fórmula:
+            initial_balance = current_balance - daily_pnl_usdt
+            daily_loss_pct = (daily_pnl_usdt / initial_balance) * 100
+
+        Returns:
+            Tuple[bool, str, Dict]:
+                - can_trade: True si no se excedió el límite
+                - reason: Razón del rechazo (vacío si OK)
+                - info: Información adicional del cálculo
+        """
         config = self.rules["daily_loss_limits"]
         max_daily_loss_pct = config.get("max_daily_loss_pct", 5.0)
         pause_duration_hours = config.get("pause_duration_hours", 12)
@@ -359,11 +373,25 @@ class UserRiskProfileValidator:
                         "time_remaining_hours": time_remaining.total_seconds() / 3600
                     }
 
-            # Calcular P&L diario desde PostgreSQL
-            daily_pnl_pct = self._get_daily_pnl_pct()
+            # ═══════════════════════════════════════════════════════════════
+            # NUEVO CÁLCULO BASADO EN BALANCE REAL
+            # ═══════════════════════════════════════════════════════════════
 
-            # Verificar si se excedió el límite
-            if daily_pnl_pct <= -max_daily_loss_pct:
+            # 1. Obtener balance inicial del día (cacheado en Redis)
+            initial_balance = self._get_initial_balance_today()
+
+            if initial_balance <= 0:
+                logger.warning(f"⚠️ Invalid initial balance for {self.user_id}: {initial_balance}")
+                return True, "", {"error": "invalid_balance", "initial_balance": initial_balance}
+
+            # 2. Calcular P&L diario en USDT (no porcentaje)
+            daily_pnl_usdt = self._get_daily_pnl_usdt()
+
+            # 3. Calcular pérdida porcentual REAL del balance
+            daily_loss_pct = (daily_pnl_usdt / initial_balance) * 100
+
+            # 4. Verificar si se excedió el límite
+            if daily_loss_pct <= -max_daily_loss_pct:
                 # Activar pausa
                 pause_until = datetime.now(timezone.utc) + timedelta(hours=pause_duration_hours)
                 self.redis_client.setex(
@@ -372,27 +400,110 @@ class UserRiskProfileValidator:
                     pause_until.isoformat()
                 )
 
-                logger.warning(f"🚨 {self.user_id} - Daily loss limit triggered: {daily_pnl_pct:.2f}% (limit: {max_daily_loss_pct}%)")
+                logger.warning(f"🚨 {self.user_id} - Daily loss limit triggered: {daily_loss_pct:.2f}% (limit: {max_daily_loss_pct}%)")
+                logger.warning(f"   📊 Initial balance today: ${initial_balance:.2f} USDT")
+                logger.warning(f"   📉 Lost today: ${daily_pnl_usdt:.2f} USDT ({daily_loss_pct:.2f}%)")
+                logger.warning(f"   ⏸️  Paused for {pause_duration_hours}h until {pause_until.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
-                return False, f"Daily loss limit exceeded ({daily_pnl_pct:.2f}% loss). Paused for {pause_duration_hours}h", {
-                    "daily_pnl_pct": daily_pnl_pct,
+                return False, f"Daily loss limit exceeded ({daily_loss_pct:.2f}% loss). Paused for {pause_duration_hours}h", {
+                    "daily_loss_pct": daily_loss_pct,
+                    "daily_pnl_usdt": daily_pnl_usdt,
+                    "initial_balance_today": initial_balance,
+                    "current_balance": initial_balance + daily_pnl_usdt,
                     "max_daily_loss_pct": max_daily_loss_pct,
                     "paused_until": pause_until.isoformat()
                 }
 
             # OK - No se excedió el límite
+            remaining_loss_allowance_usdt = initial_balance * (max_daily_loss_pct / 100) + daily_pnl_usdt
+
             return True, "", {
-                "daily_pnl_pct": daily_pnl_pct,
+                "daily_loss_pct": daily_loss_pct,
+                "daily_pnl_usdt": daily_pnl_usdt,
+                "initial_balance_today": initial_balance,
+                "current_balance": initial_balance + daily_pnl_usdt,
                 "max_daily_loss_pct": max_daily_loss_pct,
-                "remaining_loss_allowance_pct": max_daily_loss_pct + daily_pnl_pct
+                "remaining_loss_allowance_pct": max_daily_loss_pct + daily_loss_pct,
+                "remaining_loss_allowance_usdt": remaining_loss_allowance_usdt
             }
 
         except Exception as e:
             logger.error(f"❌ Error checking daily loss limits for {self.user_id}: {e}")
             return True, "", {"error": str(e)}
 
-    def _get_daily_pnl_pct(self) -> float:
-        """Obtiene el P&L diario acumulado del usuario desde medianoche UTC."""
+    # ═══════════════════════════════════════════════════════════════════
+    # MÉTODOS HELPER - Daily Loss Calculation (Balance-based)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _get_initial_balance_today(self) -> float:
+        """
+        Obtiene el balance al inicio del día (medianoche UTC).
+
+        Usa caché en Redis para evitar recalcular en cada validación.
+        El caché expira automáticamente a medianoche UTC.
+
+        Returns:
+            float: Balance en USDT al inicio del día
+        """
+        try:
+            # 1. Intentar obtener de Redis (si ya se calculó hoy)
+            today_date = datetime.now(timezone.utc).date().isoformat()
+            cache_key = f"{self.cache_prefix}:initial_balance:{today_date}"
+
+            if self.redis_client:
+                cached_balance = self.redis_client.get(cache_key)
+                if cached_balance:
+                    balance = float(cached_balance.decode() if isinstance(cached_balance, bytes) else cached_balance)
+                    logger.debug(f"📦 Using cached initial balance for {self.user_id}: ${balance:.2f}")
+                    return balance
+
+            # 2. Si no existe en caché, calcularlo al vuelo
+            current_balance = self._get_available_balance()
+            daily_pnl_usdt = self._get_daily_pnl_usdt()
+            initial_balance = current_balance - daily_pnl_usdt
+
+            logger.info(f"🔄 Calculated initial balance for {self.user_id}: ${initial_balance:.2f} (current: ${current_balance:.2f}, daily P&L: ${daily_pnl_usdt:.2f})")
+
+            # 3. Guardarlo en Redis con TTL hasta medianoche
+            if self.redis_client and initial_balance > 0:
+                seconds_until_midnight = self._seconds_until_midnight_utc()
+                self.redis_client.setex(cache_key, seconds_until_midnight, str(initial_balance))
+                logger.debug(f"💾 Cached initial balance until midnight (TTL: {seconds_until_midnight}s)")
+
+            return initial_balance
+
+        except Exception as e:
+            logger.error(f"❌ Error calculating initial balance for {self.user_id}: {e}")
+            return 0.0
+
+    def _seconds_until_midnight_utc(self) -> int:
+        """Calcula segundos hasta la próxima medianoche UTC."""
+        now = datetime.now(timezone.utc)
+        tomorrow = now + timedelta(days=1)
+        midnight = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+        return int((midnight - now).total_seconds())
+
+    def _get_available_balance(self) -> float:
+        """Obtiene el available balance actual de Binance Futures."""
+        try:
+            client = get_binance_client_for_user(self.user_id)
+            account = client.futures_account()
+            balance = float(account.get('availableBalance', 0))
+            logger.debug(f"💰 Current available balance for {self.user_id}: ${balance:.2f}")
+            return balance
+        except Exception as e:
+            logger.error(f"❌ Error getting available balance for {self.user_id}: {e}")
+            return 0.0
+
+    def _get_daily_pnl_usdt(self) -> float:
+        """
+        Obtiene el P&L diario acumulado en USDT desde medianoche UTC.
+
+        IMPORTANTE: Usa pnl_usdt (valor real en USDT), NO pnl_pct (cambio de precio).
+
+        Returns:
+            float: P&L acumulado del día en USDT (negativo si pérdida)
+        """
         if not self.protection_system:
             return 0.0
 
@@ -401,7 +512,7 @@ class UserRiskProfileValidator:
 
             query = """
                 SELECT
-                    COALESCE(SUM(pnl_pct), 0) as daily_pnl
+                    COALESCE(SUM(pnl_usdt), 0) as daily_pnl
                 FROM trade_history
                 WHERE user_id = %s
                   AND strategy = %s
@@ -415,10 +526,11 @@ class UserRiskProfileValidator:
                 daily_pnl = float(result[0]) if result else 0.0
 
             conn.close()
+            logger.debug(f"📊 Daily P&L USDT for {self.user_id}: ${daily_pnl:.2f}")
             return daily_pnl
 
         except Exception as e:
-            logger.error(f"❌ Error getting daily P&L for {self.user_id}: {e}")
+            logger.error(f"❌ Error getting daily P&L USDT for {self.user_id}: {e}")
             return 0.0
 
     # ═══════════════════════════════════════════════════════════════════

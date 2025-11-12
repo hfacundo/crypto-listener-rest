@@ -94,36 +94,6 @@ class TradeRequest(BaseModel):
             }
         }
 
-# ============================================================================
-# DEPRECATED: GuardianRequest model - NO LONGER USED
-# ============================================================================
-# This model was used by the /guardian endpoint which proxied guardian actions
-# to Binance. The new unified_guardian.py in crypto-guardian accesses Binance
-# directly, eliminating the HTTP overhead and simplifying the architecture.
-#
-# Removed: 2025-01-29
-# Reason: unified_guardian.py replaces dual monitor system and accesses Binance directly
-# ============================================================================
-#
-# class GuardianRequest(BaseModel):
-#     """Request model for guardian actions"""
-#     symbol: str = Field(..., description="Trading pair")
-#     action: str = Field(..., description="Action: close, adjust, half_close")
-#     stop: Optional[float] = Field(default=None, description="New stop price (for adjust)")
-#     target: Optional[float] = Field(default=None, description="New target price")
-#     user_id: Optional[str] = Field(default=None, description="Specific user (optional)")
-#     market_context: Optional[Dict[str, Any]] = Field(default=None, description="Market context data")
-#     level_metadata: Optional[Dict[str, Any]] = Field(default=None, description="Trailing stop level metadata (level_name, threshold_pct, previous_level)")
-#
-#     class Config:
-#         json_schema_extra = {
-#             "example": {
-#                 "symbol": "BTCUSDT",
-#                 "action": "close",
-#                 "user_id": "User_1"
-#             }
-#         }
-
 # Core trade processing logic (from Lambda)
 def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
     """
