@@ -339,13 +339,17 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
     # Convertir a dict para procesar
     message = trade.model_dump()
 
+    # Extract strategy from request (archer_model or archer_dual)
+    request_strategy = trade.strategy if trade.strategy else STRATEGY
+    print(f"📊 Strategy received: {request_strategy}")
+
     # PARALLEL EXECUTION: Process all users simultaneously
     print(f"🚀 Processing trade for {len(USERS)} users in parallel")
 
     with ThreadPoolExecutor(max_workers=len(USERS), thread_name_prefix="User") as executor:
         # Submit all user tasks
         futures = {
-            executor.submit(process_user_trade, user_id, message, STRATEGY): user_id
+            executor.submit(process_user_trade, user_id, message, request_strategy): user_id
             for user_id in USERS
         }
 
