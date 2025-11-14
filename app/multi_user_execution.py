@@ -34,7 +34,7 @@ def execute_guardian_action_for_user(user_id: str, symbol: str, action: str,
             asyncio.set_event_loop(loop)
 
         client = get_binance_client_for_user(user_id)
-        rules = get_rules(user_id, "archer_dual")  # Estrategia default
+        rules = get_rules(user_id, "archer_model")  # Estrategia default
 
         # Verificar si guardian está habilitado para este usuario
         if not rules.get("use_guardian", True):

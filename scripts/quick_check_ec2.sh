@@ -5,7 +5,7 @@
 # ========================================
 
 USER_ID="${1:-hufsa}"
-STRATEGY="${2:-archer_dual}"
+STRATEGY="${2:-archer_model}"
 
 echo ""
 echo "🔍 Quick Status Check for ${USER_ID}"

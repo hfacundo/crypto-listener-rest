@@ -55,7 +55,7 @@ elif DEPLOYMENT_ENV == "secondary":
 else:
     raise ValueError(f"DEPLOYMENT_ENV inválido: {DEPLOYMENT_ENV}")
 
-STRATEGY = "archer_dual"
+STRATEGY = "archer_model"
 
 # FastAPI app
 app = FastAPI(
@@ -74,7 +74,7 @@ class TradeRequest(BaseModel):
     trade: str = Field(..., description="Trade direction: LONG or SHORT")
     rr: float = Field(..., description="Risk/Reward ratio")
     probability: float = Field(..., description="Win probability percentage")
-    strategy: str = Field(default="archer_dual", description="Strategy name")
+    strategy: str = Field(default="archer_model", description="Strategy name")
     signal_quality_score: Optional[float] = Field(default=0, description="Signal quality score")
     tier: Optional[int] = Field(default=None, description="Signal tier (1-10) from crypto-analyzer-redis")
 
@@ -88,7 +88,7 @@ class TradeRequest(BaseModel):
                 "trade": "LONG",
                 "rr": 2.0,
                 "probability": 75.0,
-                "strategy": "archer_dual",
+                "strategy": "archer_model",
                 "signal_quality_score": 8.5,
                 "tier": 3
             }

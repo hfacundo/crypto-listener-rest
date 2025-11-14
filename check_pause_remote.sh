@@ -3,7 +3,7 @@
 # Ejecutar desde el servidor donde corre crypto-listener-rest
 
 USER_ID="${1:-hufsa}"
-STRATEGY="${2:-archer_dual}"
+STRATEGY="${2:-archer_model}"
 
 echo "=========================================="
 echo "Checking Daily Loss Pause for $USER_ID"

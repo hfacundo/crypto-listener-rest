@@ -8,7 +8,7 @@ from app.utils.db.query_executor import get_rules
 from app.utils.binance.binance_client import get_binance_client_for_user
 
 
-def get_all_users_trade_status(users: List[str], strategy: str = "archer_dual") -> Dict:
+def get_all_users_trade_status(users: List[str], strategy: str = "archer_model") -> Dict:
     """
     Obtiene el estado de límites para todos los usuarios
 
@@ -127,7 +127,7 @@ def format_trade_status_report(status_report: Dict) -> str:
         return f"Error formatting report: {e}"
 
 
-def check_user_can_trade(user_id: str, symbol: str, strategy: str = "archer_dual") -> Dict:
+def check_user_can_trade(user_id: str, symbol: str, strategy: str = "archer_model") -> Dict:
     """
     Función de utilidad para verificar si un usuario específico puede hacer un trade
     """
@@ -156,7 +156,7 @@ def check_user_can_trade(user_id: str, symbol: str, strategy: str = "archer_dual
         }
 
 
-def suggest_trade_management_actions(users: List[str], strategy: str = "archer_dual") -> Dict:
+def suggest_trade_management_actions(users: List[str], strategy: str = "archer_model") -> Dict:
     """
     Sugiere acciones de gestión basadas en el estado actual
     """
@@ -195,7 +195,7 @@ def suggest_trade_management_actions(users: List[str], strategy: str = "archer_d
 
 
 # Función de debugging rápido
-def quick_status_check(users: List[str], strategy: str = "archer_dual") -> None:
+def quick_status_check(users: List[str], strategy: str = "archer_model") -> None:
     """
     Quick status check con print directo (para debugging)
     """

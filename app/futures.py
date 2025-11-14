@@ -303,7 +303,7 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
         return False
 
 # NEW: close (reduce-only) + cleanup SL/TP
-def close_position_and_cancel_orders(symbol: str, client, user_id: str, strategy: str = "archer_dual") -> dict:
+def close_position_and_cancel_orders(symbol: str, client, user_id: str, strategy: str = "archer_model") -> dict:
     """
     Cierra completamente una posición abierta y cancela todas las órdenes pendientes.
     Actualiza el trade en PostgreSQL con el resultado.
@@ -312,7 +312,7 @@ def close_position_and_cancel_orders(symbol: str, client, user_id: str, strategy
         symbol: Símbolo del trade
         client: Cliente de Binance
         user_id: ID del usuario
-        strategy: Nombre de la estrategia (default: "archer_dual")
+        strategy: Nombre de la estrategia (default: "archer_model")
 
     Returns:
         dict con success, order_id o error

@@ -17,13 +17,13 @@ from app.utils.db.redis_client import get_redis_client
 from app.utils.trade_protection import TradeProtectionSystem
 from app.utils.db.query_executor import get_rules
 
-def check_daily_loss_status(user_id: str, strategy: str = "archer_dual"):
+def check_daily_loss_status(user_id: str, strategy: str = "archer_model"):
     """
     Consulta el estado completo de Daily Loss Limit para un usuario.
 
     Args:
         user_id: ID del usuario (ej: "hufsa", "copy_trading")
-        strategy: Estrategia (default: "archer_dual")
+        strategy: Estrategia (default: "archer_model")
     """
 
     print(f"\n{'='*80}")
@@ -198,7 +198,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Check Daily Loss Limit status for a user")
     parser.add_argument("user_id", nargs="?", default="hufsa", help="User ID (default: hufsa)")
-    parser.add_argument("--strategy", default="archer_dual", help="Strategy name (default: archer_dual)")
+    parser.add_argument("--strategy", default="archer_model", help="Strategy name (default: archer_model)")
 
     args = parser.parse_args()
 
