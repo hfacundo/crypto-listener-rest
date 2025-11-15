@@ -746,10 +746,14 @@ class UserRiskProfileValidator:
 
             open_count = sum(1 for pos in positions if abs(float(pos.get("positionAmt", "0"))) > 0)
 
-            # Límite básico: máximo 10 posiciones simultáneas
-            if open_count >= 10:
+            # Obtener límite de trades desde rules (fallback: 12 si no existe)
+            max_trades_open = self.rules.get("max_trades_open", 12)
+
+            # Validar límite de posiciones simultáneas
+            if open_count >= max_trades_open:
                 return False, f"Too many open positions ({open_count}). Portfolio protection limit.", {
                     "open_count": open_count,
+                    "max_trades_open": max_trades_open,
                     "source": "basic_validation"
                 }
 
