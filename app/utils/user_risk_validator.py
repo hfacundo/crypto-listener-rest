@@ -97,7 +97,8 @@ class UserRiskProfileValidator:
         probability: float,
         sqs: float,
         rr: float,
-        tier: int = None
+        tier: int = None,
+        ev: float = None
     ) -> Tuple[bool, str, Dict]:
         """
         Validación COMPLETA de un trade contra el perfil del usuario.
@@ -332,6 +333,25 @@ class UserRiskProfileValidator:
                 reason = f"RR {rr:.2f} < {min_rr} (user threshold)"
                 logger.warning(f"🚫 {self.user_id} - archer_model REJECTED: {reason}")
                 return False, f"RR_REJECTED: {reason}", validation_results
+
+            # Check EV threshold (Expected Value)
+            min_ev = self.rules.get("min_ev", 0.0)
+            if min_ev > 0:
+                # Si viene EV del request, usar ese valor
+                if ev is not None:
+                    current_ev = ev
+                else:
+                    # Fallback: calcular si no viene en el request
+                    win_prob = probability / 100.0
+                    current_ev = (win_prob * rr) - ((1.0 - win_prob) * 1.0)
+
+                if current_ev < min_ev:
+                    validation_results["failed_at"] = "ev_threshold"
+                    reason = f"EV {current_ev:.4f} < {min_ev} (expected value too low)"
+                    logger.warning(f"🚫 {self.user_id} - archer_model REJECTED: {reason}")
+                    return False, f"EV_REJECTED: {reason}", validation_results
+
+                logger.debug(f"📊 {self.user_id} - EV check passed: {current_ev:.4f} >= {min_ev}")
 
             # Approved - use fixed capital multiplier from risk_pct
             logger.info(f"✅ {self.user_id} - archer_model APPROVED: prob={probability}% >= {min_prob}%, rr={rr:.2f} >= {min_rr}")

@@ -74,6 +74,7 @@ class TradeRequest(BaseModel):
     trade: str = Field(..., description="Trade direction: LONG or SHORT")
     rr: float = Field(..., description="Risk/Reward ratio")
     probability: float = Field(..., description="Win probability percentage")
+    ev: Optional[float] = Field(default=None, description="Expected Value (EV)")
     strategy: str = Field(default="archer_model", description="Strategy name")
     signal_quality_score: Optional[float] = Field(default=0, description="Signal quality score")
     tier: Optional[int] = Field(default=None, description="Signal tier (1-10) from crypto-analyzer-redis")
@@ -137,6 +138,7 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         direction = message.get("trade")
         rr = message.get("rr")
         probability = message.get("probability")
+        ev = message.get("ev")  # ✨ NEW: Extract EV from crypto-analyzer-redis
         signal_quality_score = message.get("signal_quality_score", 0)
         tier = message.get("tier")  # ✨ NEW: Extract tier from crypto-analyzer-redis
 
@@ -154,10 +156,25 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         if is_test:
             print(f"{log_prefix} 🧪 TEST MODE DEBUG: is_test={is_test}, test_users={test_users_list}, current_user={user_id}")
 
-        tier_info = f" TIER {tier}" if tier else ""
-        test_info = f" 🧪 TEST MODE (LEV {test_leverage}x)" if is_test and test_leverage else (" 🧪 TEST MODE" if is_test else "")
+        # Logs mejorados con iconos y saltos de línea
         direction_str = direction.upper() if direction else "UNKNOWN"
-        print(f"{log_prefix} {symbol} | {direction_str} | Prob: {probability}% | RR: {rr} | SQS: {signal_quality_score:.1f}{tier_info}{test_info}")
+        print(f"\n{'='*70}")
+        print(f"📨 NUEVO REQUEST RECIBIDO - {symbol}")
+        print(f"{'='*70}")
+        print(f"📊 Dirección:     {direction_str}")
+        print(f"💹 Entry:         ${entry_price:,.4f}")
+        print(f"🛑 Stop Loss:     ${stop_loss:,.4f}")
+        print(f"🎯 Target:        ${target_price:,.4f}")
+        print(f"⚖️  RR:            {rr:.2f}")
+        print(f"🎲 Probabilidad:  {probability}%")
+        if ev is not None:
+            print(f"💰 EV:            {ev:.4f}")
+        if is_test and test_leverage:
+            print(f"🧪 Test Mode:     LEV {test_leverage}x")
+        elif is_test:
+            print(f"🧪 Test Mode:     Activo")
+        print(f"👤 Usuario:       {log_prefix}")
+        print(f"{'='*70}\n")
 
         # 🧪 TEST MODE: Si es test, solo procesar para usuarios en la lista
         if is_test and test_users_list and user_id not in test_users_list:
@@ -181,7 +198,8 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
             probability=probability,
             sqs=signal_quality_score,
             rr=rr,
-            tier=tier  # ✨ NEW: Pass tier to validator
+            tier=tier,  # ✨ NEW: Pass tier to validator
+            ev=ev  # ✨ NEW: Pass EV to validator
         )
 
         if not can_trade:

@@ -14,7 +14,8 @@ LOCAL_RULES = {
         "archer_dual": {
             # ═══ Core Settings (Configuración básica) ═══
             "enabled": True,              # Activar/desactivar usuario completamente
-            "min_rr": 1.2,                # Risk/Reward mínimo aceptado (1.2 = ganar 1.2 por cada 1 arriesgado)
+            "min_rr": 1.1,                # Risk/Reward mínimo aceptado (1.1 = ganar 1.1 por cada 1 arriesgado)
+            "min_ev": 0.06,               # Expected Value mínimo (0.06 = 6% de ganancia esperada)
             "risk_pct": 1.0,              # % del capital a arriesgar por trade (1.0 = 1%)
             "max_leverage": 30,           # Apalancamiento máximo permitido (30x)
 
@@ -116,8 +117,9 @@ LOCAL_RULES = {
         # ═══════════════════════════════════════════════════════════════
         "archer_model": {
             "enabled": True,
-            "min_rr": 1.0,
-            "min_probability": 50,
+            "min_rr": 1.1,
+            "min_probability": 70,
+            "min_ev": 0.06,               # Expected Value mínimo (0.06 = 6% de ganancia esperada)
             "risk_pct": 1.0,
             "max_leverage": 30,
             "max_trades_open": 3,
@@ -186,7 +188,8 @@ LOCAL_RULES = {
         "archer_dual": {
             # ═══ Core Settings ═══
             "enabled": True,
-            "min_rr": 1.2,
+            "min_rr": 1.1,
+            "min_ev": 0.06,               # Expected Value mínimo (0.06 = 6% de ganancia esperada)
             "risk_pct": 1.0,
             "max_leverage": 30,
 
@@ -272,8 +275,9 @@ LOCAL_RULES = {
         # ═══════════════════════════════════════════════════════════════
         "archer_model": {
             "enabled": True,
-            "min_rr": 1.0,
-            "min_probability": 50,
+            "min_rr": 1.1,
+            "min_probability": 70,
+            "min_ev": 0.06,               # Expected Value mínimo (0.06 = 6% de ganancia esperada)
             "risk_pct": 1.0,
             "max_leverage": 30,
             "max_trades_open": 3,
@@ -343,7 +347,8 @@ LOCAL_RULES = {
         "archer_dual": {
             # ═══ Core Settings ═══
             "enabled": True,
-            "min_rr": 1.2,
+            "min_rr": 1.1,
+            "min_ev": 0.06,               # Expected Value mínimo (0.06 = 6% de ganancia esperada)
             "risk_pct": 1.0,
             "max_leverage": 40,               # Mayor apalancamiento que conservador (40x vs 30x)
 
@@ -430,8 +435,9 @@ LOCAL_RULES = {
         # ═══════════════════════════════════════════════════════════════
         "archer_model": {
             "enabled": True,
-            "min_rr": 1.0,
-            "min_probability": 40,  # Más permisivo (moderado)
+            "min_rr": 1.1,
+            "min_probability": 70,
+            "min_ev": 0.06,               # Expected Value mínimo (0.06 = 6% de ganancia esperada)
             "risk_pct": 1.0,
             "max_leverage": 40,
             "max_trades_open": 12,  # Más trades (moderado)
@@ -501,7 +507,8 @@ LOCAL_RULES = {
         "archer_dual": {
             # ═══ Core Settings ═══
             "enabled": True,
-            "min_rr": 1.2,
+            "min_rr": 1.1,
+            "min_ev": 0.06,               # Expected Value mínimo (0.06 = 6% de ganancia esperada)
             "risk_pct": 1.0,
             "max_leverage": 50,               # Apalancamiento máximo (50x)
 
@@ -588,8 +595,9 @@ LOCAL_RULES = {
         # ═══════════════════════════════════════════════════════════════
         "archer_model": {
             "enabled": True,
-            "min_rr": 1.0,
-            "min_probability": 40,  # Muy permisivo (agresivo)
+            "min_rr": 1.1,
+            "min_probability": 70,
+            "min_ev": 0.06,               # Expected Value mínimo (0.06 = 6% de ganancia esperada)
             "risk_pct": 1.0,
             "max_leverage": 50,  # Máximo apalancamiento (agresivo)
             "max_trades_open": 15,  # Muchos trades (agresivo)
