@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional
 
@@ -155,26 +155,10 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         # Debug logging para test mode
         if is_test:
             print(f"{log_prefix} 🧪 TEST MODE DEBUG: is_test={is_test}, test_users={test_users_list}, current_user={user_id}")
-
-        # Logs mejorados con iconos y saltos de línea
-        direction_str = direction.upper() if direction else "UNKNOWN"
-        print(f"\n{'='*70}")
-        print(f"📨 NUEVO REQUEST RECIBIDO - {symbol}")
-        print(f"{'='*70}")
-        print(f"📊 Dirección:     {direction_str}")
-        print(f"💹 Entry:         ${entry_price:,.4f}")
-        print(f"🛑 Stop Loss:     ${stop_loss:,.4f}")
-        print(f"🎯 Target:        ${target_price:,.4f}")
-        print(f"⚖️  RR:            {rr:.2f}")
-        print(f"🎲 Probabilidad:  {probability}%")
-        if ev is not None:
-            print(f"💰 EV:            {ev:.4f}")
-        if is_test and test_leverage:
-            print(f"🧪 Test Mode:     LEV {test_leverage}x")
-        elif is_test:
-            print(f"🧪 Test Mode:     Activo")
-        print(f"👤 Usuario:       {log_prefix}")
-        print(f"{'='*70}\n")
+            if test_leverage:
+                print(f"{log_prefix} 🧪 Test Mode: LEV {test_leverage}x")
+            else:
+                print(f"{log_prefix} 🧪 Test Mode: Activo")
 
         # 🧪 TEST MODE: Si es test, solo procesar para usuarios en la lista
         if is_test and test_users_list and user_id not in test_users_list:
@@ -360,6 +344,27 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
     # Extract strategy from request (archer_model or archer_dual)
     request_strategy = trade.strategy if trade.strategy else STRATEGY
     print(f"📊 Strategy received: {request_strategy}")
+
+    # Calcular horas UTC y Ciudad de México
+    now_utc = datetime.now(timezone.utc)
+    now_cdmx = now_utc.astimezone(timezone(timedelta(hours=-6)))  # Ciudad de México UTC-6
+    time_str = f"🕐 {now_utc.strftime('%H:%M:%S')} UTC ({now_cdmx.strftime('%H:%M:%S')} CDMX)"
+
+    # Log del request recibido (solo una vez)
+    direction_str = trade.trade.upper() if trade.trade else "UNKNOWN"
+    print(f"\n{'='*70}")
+    print(f"📨 NUEVO REQUEST RECIBIDO - {trade.symbol}")
+    print(f"{time_str}")
+    print(f"{'='*70}")
+    print(f"📊 Dirección:     {direction_str}")
+    print(f"💹 Entry:         ${trade.entry:,.4f}")
+    print(f"🛑 Stop Loss:     ${trade.stop:,.4f}")
+    print(f"🎯 Target:        ${trade.target:,.4f}")
+    print(f"⚖️  RR:            {trade.rr:.2f}")
+    print(f"🎲 Probabilidad:  {trade.probability}%")
+    if trade.ev is not None:
+        print(f"💰 EV:            {trade.ev:.4f}")
+    print(f"{'='*70}\n")
 
     # PARALLEL EXECUTION: Process all users simultaneously
     print(f"🚀 Processing trade for {len(USERS)} users in parallel")
