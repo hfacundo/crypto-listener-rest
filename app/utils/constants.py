@@ -91,3 +91,6 @@ MIN_VOLUME_RATIO = 0.5  # Recomendado: 0.5 (50%)
 
 # Número mínimo de velas con volumen positivo
 MIN_VOLUME_POINTS = 30  # Recomendado: 30
+
+# Signal TTL validation (Nov 2025 - Phase 2: Candle-sync)
+MAX_SIGNAL_AGE_SECONDS = 10.0  # Reject signals older than 10 seconds

@@ -267,13 +267,18 @@ def adjust_price_to_tick(price: float, tick_size: float) -> float:
 
 
 def is_trade_allowed_by_schedule_utc(rules: dict, now_utc: datetime = None) -> bool:
-    schedule_text = rules.get("schedule")
-    if not schedule_text:
+    schedule = rules.get("schedule")
+    if not schedule:
         print("🟢 Sin restricciones: permitido 24/7")
         return True  # No hay restricciones, se permite operar 24/7
 
     try:
-        schedule = json.loads(schedule_text)
+        # Manejar tanto dict (PostgreSQL jsonb) como string JSON (legacy)
+        if isinstance(schedule, str):
+            schedule = json.loads(schedule)
+        elif not isinstance(schedule, dict):
+            print(f"⚠️ Formato de schedule desconocido: {type(schedule)}")
+            return True  # Por seguridad, asumimos que se permite
     except Exception as e:
         print(f"❌ Error al interpretar schedule: {e}")
         return True  # Por seguridad, asumimos que se permite

@@ -78,6 +78,9 @@ class TradeRequest(BaseModel):
     strategy: str = Field(default="archer_model", description="Strategy name")
     signal_quality_score: Optional[float] = Field(default=0, description="Signal quality score")
     tier: Optional[int] = Field(default=None, description="Signal tier (1-10) from crypto-analyzer-redis")
+    # ⏰ TIMESTAMP FIELDS (Nov 2025 - Phase 2: Candle-sync)
+    generated_at_utc: Optional[str] = Field(default=None, description="Signal generation time (ISO format UTC)")
+    generated_timestamp: Optional[float] = Field(default=None, description="Signal generation time (Unix timestamp)")
 
     class Config:
         json_schema_extra = {
@@ -337,6 +340,23 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
     # Validar campos requeridos
     if not all([trade.symbol, trade.entry, trade.stop, trade.target, trade.trade, trade.rr, trade.probability]):
         raise HTTPException(status_code=400, detail="Missing required fields")
+
+    # ⏰ TTL VALIDATION (Nov 2025 - Phase 2: Candle-sync)
+    # Reject signals that are too old to prevent stale data execution
+    if trade.generated_timestamp is not None:
+        from app.utils.constants import MAX_SIGNAL_AGE_SECONDS
+        signal_age = time.time() - trade.generated_timestamp
+
+        if signal_age > MAX_SIGNAL_AGE_SECONDS:
+            print(f"⏱️  Signal REJECTED: Too old ({signal_age:.2f}s > {MAX_SIGNAL_AGE_SECONDS}s)")
+            print(f"   Generated at: {trade.generated_at_utc}")
+            print(f"   Signal expired - discarding to prevent stale data execution")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Signal expired: {signal_age:.2f}s old (max: {MAX_SIGNAL_AGE_SECONDS}s)"
+            )
+        else:
+            print(f"⏰ Signal freshness: {signal_age:.2f}s old (within {MAX_SIGNAL_AGE_SECONDS}s TTL)")
 
     # Convertir a dict para procesar
     message = trade.model_dump()
