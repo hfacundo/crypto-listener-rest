@@ -133,6 +133,9 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
             print(f"{log_prefix} Usuario deshabilitado")
             return {"user_id": user_id, "success": False, "reason": "user_disabled"}
 
+        # ✨ NEW: Obtener configuración de modelo del usuario (default: "all")
+        user_model_filter = rules.get("model", "all")
+
         # Extraer campos del mensaje
         symbol = message.get("symbol")
         entry_price = message.get("entry")
@@ -144,6 +147,14 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         ev = message.get("ev")  # ✨ NEW: Extract EV from crypto-analyzer-redis
         signal_quality_score = message.get("signal_quality_score", 0)
         tier = message.get("tier")  # ✨ NEW: Extract tier from crypto-analyzer-redis
+        model_id = message.get("model_id", "all")  # ✨ NEW: Extract model_id, default "all"
+
+        # ✨ NEW: Validar que el model_id de la señal coincida con la configuración del usuario
+        if user_model_filter != "all" and model_id != user_model_filter:
+            print(f"{log_prefix} Model REJECTED: User filter='{user_model_filter}', Signal model_id='{model_id}'")
+            return {"user_id": user_id, "success": False, "reason": "model_filter_mismatch"}
+
+        print(f"{log_prefix} Model filter check PASSED: User='{user_model_filter}', Signal='{model_id}'")
 
         # 🧪 TEST MODE: Detectar si es un trade de prueba
         is_test = message.get("is_test", False)
