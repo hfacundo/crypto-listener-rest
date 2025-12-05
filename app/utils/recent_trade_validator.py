@@ -188,13 +188,72 @@ class RecentTradeValidator:
             )
             return True, f"OK (last trade: {exit_reason}, closed {self._format_time_ago(exit_time)})"
 
-        # No hay trade cerrado reciente, verificar cuánto tiempo ha pasado desde entry
+        # ===================================================================
+        # PASO 5.5: DETECCIÓN DE ORPHAN ORDERS (NUEVO)
+        # ===================================================================
+        # Si no hay trade cerrado reciente, verificar si hay ORPHAN ORDERS en Binance
+        # Esto detecta cuando:
+        # - SL tocó primero (trade perdió)
+        # - TP order quedó huérfano en Binance
+        # - WebSocket aún no actualizó BD
+        #
+        # CRÍTICO: Esto actualiza BD y aplica cooldown inmediatamente
+
         entry_time = last_trade['entry_time']
         if entry_time.tzinfo is None:
             entry_time = entry_time.replace(tzinfo=timezone.utc)
 
         hours_since_entry = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
 
+        # Solo verificar orphan orders si el trade tiene > 5 minutos
+        # (para dar tiempo a que WebSocket procese normalmente)
+        if hours_since_entry >= 0.08:  # 5 minutos = 0.08 horas
+            try:
+                from app.utils.orphan_order_detector import get_orphan_order_detector
+                from app.utils.trade_protection import TradeProtectionSystem
+
+                orphan_detector = get_orphan_order_detector()
+                protection_system = TradeProtectionSystem()
+
+                has_orphans, action, updated_trade_info = orphan_detector.check_and_handle_orphan_orders(
+                    user_id=user_id,
+                    strategy=strategy,
+                    symbol=symbol_lower,
+                    last_trade_from_db=last_trade,
+                    protection_system=protection_system
+                )
+
+                if has_orphans and updated_trade_info:
+                    exit_reason = updated_trade_info.get('exit_reason')
+                    exit_time = updated_trade_info.get('exit_time')
+
+                    logger.info(
+                        f"🔍 Orphan order detected and handled for {user_id}/{symbol}: "
+                        f"{exit_reason} ({action})"
+                    )
+
+                    # Si perdió (stop_hit), aplicar cooldown
+                    if exit_reason == 'stop_hit':
+                        if exit_time.tzinfo is None:
+                            exit_time = exit_time.replace(tzinfo=timezone.utc)
+
+                        hours_since_close = (datetime.now(timezone.utc) - exit_time).total_seconds() / 3600
+
+                        if hours_since_close < cooldown_hours:
+                            return False, (
+                                f"Stop hit {hours_since_close:.1f}h ago for {symbol} "
+                                f"(detected via orphan order, cooldown: {cooldown_hours}h, "
+                                f"remaining: {cooldown_hours - hours_since_close:.1f}h)"
+                            )
+
+                    # Si ganó (target_hit), permitir inmediatamente
+                    return True, f"OK (orphan order detected: {exit_reason}, trade updated in BD)"
+
+            except Exception as e:
+                logger.error(f"❌ Error checking orphan orders: {e}")
+                # Si falla detección, continuar con lógica por defecto
+
+        # No hay trade cerrado reciente ni orphan orders, verificar tiempo desde entry
         if hours_since_entry < 0.5:  # < 30 minutos
             # Muy reciente, esperar a que WebSocket/cleanup procese
             return False, (
