@@ -111,8 +111,14 @@ class RecentTradeValidator:
         # ===================================================================
         last_trade = self._get_last_trade_from_db(user_id, strategy, symbol_lower)
 
+        # 🔍 LOG CRÍTICO DE DEBUG
+        logger.info(f"🔍 COOLDOWN DEBUG [{user_id}/{symbol_lower}]:")
+        logger.info(f"   last_trade from DB: {last_trade}")
+        logger.info(f"   cooldown_hours config: {cooldown_hours}h")
+
         if not last_trade:
             # Sin historial → Permitir
+            logger.info(f"   ✅ DECISION: No previous trades found → ALLOW TRADE")
             return True, "No previous trades"
 
         # ===================================================================
@@ -126,15 +132,28 @@ class RecentTradeValidator:
             if exit_time.tzinfo is None:
                 exit_time = exit_time.replace(tzinfo=timezone.utc)
 
+            hours_since_close = (datetime.now(timezone.utc) - exit_time).total_seconds() / 3600
+
+            logger.info(f"   📊 Last trade status: exit_reason={exit_reason}, exit_time={self._format_time_ago(exit_time)}")
+
             # Solo aplicar cooldown si PERDIÓ
             if exit_reason == 'stop_hit':
-                hours_since_close = (datetime.now(timezone.utc) - exit_time).total_seconds() / 3600
-
                 if hours_since_close < cooldown_hours:
+                    logger.warning(
+                        f"   ❌ DECISION: REJECT TRADE - Stop hit {hours_since_close:.1f}h ago "
+                        f"(cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_close:.1f}h)"
+                    )
                     return False, (
                         f"Stop hit {hours_since_close:.1f}h ago for {symbol} "
                         f"(cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_close:.1f}h)"
                     )
+                else:
+                    logger.info(
+                        f"   ✅ DECISION: ALLOW TRADE - Stop hit {hours_since_close:.1f}h ago "
+                        f"(cooldown {cooldown_hours}h expired)"
+                    )
+            else:
+                logger.info(f"   ✅ DECISION: ALLOW TRADE - Last trade was {exit_reason} (not a loss)")
 
             # Ganó o cooldown expiró → Permitir
             return True, f"OK (last trade: {exit_reason}, closed {self._format_time_ago(exit_time)})"
@@ -159,6 +178,11 @@ class RecentTradeValidator:
         #
         # Race condition: crypto-guardian eliminó de Redis pero aún no actualizó PostgreSQL
         # Solución: Buscar si hay un trade CERRADO recientemente
+
+        logger.warning(
+            f"   ⚠️ RACE CONDITION DETECTED: Trade marked 'active' in DB but NOT in Redis - "
+            f"Searching for recent closed trades..."
+        )
 
         recent_closed_trade = self._get_recent_closed_trade(user_id, strategy, symbol_lower, minutes=30)
 
@@ -189,7 +213,7 @@ class RecentTradeValidator:
             return True, f"OK (last trade: {exit_reason}, closed {self._format_time_ago(exit_time)})"
 
         # ===================================================================
-        # PASO 5.5: DETECCIÓN DE ORPHAN ORDERS (NUEVO)
+        # PASO 5.5: DETECCIÓN DE ORPHAN ORDERS (CRÍTICO)
         # ===================================================================
         # Si no hay trade cerrado reciente, verificar si hay ORPHAN ORDERS en Binance
         # Esto detecta cuando:
@@ -205,10 +229,17 @@ class RecentTradeValidator:
 
         hours_since_entry = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
 
-        # Solo verificar orphan orders si el trade tiene > 5 minutos
-        # (para dar tiempo a que WebSocket procese normalmente)
-        if hours_since_entry >= 0.08:  # 5 minutos = 0.08 horas
-            try:
+        logger.info(
+            f"   🔍 No recent closed trade found - Checking for orphan orders... "
+            f"(trade entry: {hours_since_entry * 60:.1f} min ago)"
+        )
+
+        # EJECUTAR INMEDIATAMENTE (sin delay)
+        # Binance API es la fuente de verdad - no necesitamos esperar porque:
+        # 1. Si trade cerró → orphan orders ya existen en Binance (inmediato)
+        # 2. Si trade activo → ambas órdenes están en Binance (inmediato)
+        # 3. Query de open_orders es rápido (<100ms) y no tiene race condition
+        try:
                 from app.utils.orphan_order_detector import get_orphan_order_detector
                 from app.utils.trade_protection import TradeProtectionSystem
 
@@ -227,9 +258,9 @@ class RecentTradeValidator:
                     exit_reason = updated_trade_info.get('exit_reason')
                     exit_time = updated_trade_info.get('exit_time')
 
-                    logger.info(
-                        f"🔍 Orphan order detected and handled for {user_id}/{symbol}: "
-                        f"{exit_reason} ({action})"
+                    logger.warning(
+                        f"   🚨 ORPHAN ORDER DETECTED [{user_id}/{symbol}]: "
+                        f"exit_reason={exit_reason}, action={action}"
                     )
 
                     # Si perdió (stop_hit), aplicar cooldown
@@ -240,14 +271,29 @@ class RecentTradeValidator:
                         hours_since_close = (datetime.now(timezone.utc) - exit_time).total_seconds() / 3600
 
                         if hours_since_close < cooldown_hours:
+                            logger.warning(
+                                f"   ❌ DECISION: REJECT TRADE - Orphan stop hit {hours_since_close:.1f}h ago "
+                                f"(cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_close:.1f}h)"
+                            )
                             return False, (
                                 f"Stop hit {hours_since_close:.1f}h ago for {symbol} "
                                 f"(detected via orphan order, cooldown: {cooldown_hours}h, "
                                 f"remaining: {cooldown_hours - hours_since_close:.1f}h)"
                             )
+                        else:
+                            logger.info(
+                                f"   ✅ DECISION: ALLOW TRADE - Orphan stop hit {hours_since_close:.1f}h ago "
+                                f"(cooldown {cooldown_hours}h expired)"
+                            )
 
                     # Si ganó (target_hit), permitir inmediatamente
+                    logger.info(
+                        f"   ✅ DECISION: ALLOW TRADE - Orphan order was WIN ({exit_reason}), "
+                        f"BD updated, no cooldown needed"
+                    )
                     return True, f"OK (orphan order detected: {exit_reason}, trade updated in BD)"
+                else:
+                    logger.info(f"   ℹ️ No orphans detected: {action}")
 
             except Exception as e:
                 logger.error(f"❌ Error checking orphan orders: {e}")
@@ -256,6 +302,10 @@ class RecentTradeValidator:
         # No hay trade cerrado reciente ni orphan orders, verificar tiempo desde entry
         if hours_since_entry < 0.5:  # < 30 minutos
             # Muy reciente, esperar a que WebSocket/cleanup procese
+            logger.info(
+                f"   ⏳ DECISION: REJECT TRADE - Trade too recent ({hours_since_entry * 60:.1f} min ago), "
+                f"waiting for sync"
+            )
             return False, (
                 f"Trade recently opened for {symbol} ({hours_since_entry * 60:.1f} min ago), "
                 f"waiting for sync"
@@ -263,9 +313,11 @@ class RecentTradeValidator:
         else:
             # Ya pasó tiempo suficiente, permitir
             # (crypto-guardian-cleanup debería haberlo procesado)
-            logger.info(
-                f"⚠️ Trade marked 'active' in DB but not in Redis and entry > 30min ago: "
-                f"{user_id}/{symbol} (allowing trade)"
+            logger.error(
+                f"   🚨 POTENTIAL BUG: Trade marked 'active' in DB for {hours_since_entry:.1f}h "
+                f"but NOT in Redis and NO orphan orders found. "
+                f"This suggests crypto-guardian failed to update DB. "
+                f"ALLOWING TRADE (may bypass cooldown if trade actually lost)."
             )
             return True, "OK (old active trade, likely closed)"
 

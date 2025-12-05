@@ -184,6 +184,37 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
             print(f"{log_prefix} Trade REJECTED: {symbol} is in banned symbols list")
             return {"user_id": user_id, "success": False, "reason": "banned_symbol"}
 
+        # 🔍 DEBUG: Verificar último trade en BD antes de validación
+        try:
+            from app.utils.trade_protection import TradeProtectionSystem
+            protection_system = TradeProtectionSystem()
+            conn = protection_system._get_conn()
+
+            query = """
+            SELECT id, entry_time, exit_time, exit_reason, stop_price, target_price
+            FROM trade_history
+            WHERE user_id = %s AND strategy = %s AND symbol = %s
+            ORDER BY entry_time DESC
+            LIMIT 1
+            """
+
+            with conn.cursor() as cur:
+                cur.execute(query, (user_id, strategy, symbol))
+                last_trade_db = cur.fetchone()
+
+                if last_trade_db:
+                    trade_id, entry_time, exit_time, exit_reason, stop_price, target_price = last_trade_db
+                    print(f"{log_prefix} 🔍 Last trade in DB: id={trade_id}, exit_reason={exit_reason}, exit_time={exit_time}")
+
+                    if exit_reason == 'active':
+                        print(f"{log_prefix} ⚠️ WARNING: Last trade still marked as 'active' in DB - will validate with orphan detector")
+                else:
+                    print(f"{log_prefix} 🔍 No previous trades in DB for {symbol}")
+
+            conn.close()
+        except Exception as e:
+            print(f"{log_prefix} ⚠️ Error checking last trade in DB: {e}")
+
         # VALIDACIÓN INTEGRADA
         validator = UserRiskProfileValidator(user_id, strategy, rules)
 
