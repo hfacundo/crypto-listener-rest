@@ -7,11 +7,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import json
 import time
+import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -22,6 +24,8 @@ from app.futures import (
     adjust_sl_tp_for_open_position,
     adjust_stop_only_for_open_position,
     half_close_and_move_be,
+    get_current_sl_tp,  # NEW: Get current SL/TP from orders
+    cancel_tp_only,     # NEW: Cancel only TP orders
 )
 from app.multi_user_execution import execute_multi_user_guardian_action
 from app.market_validation import get_fresh_market_data, validate_guardian_decision_freshness, should_proceed_with_execution
@@ -32,9 +36,19 @@ from app.utils.binance.binance_client import get_binance_client_for_user
 from app.utils.config.settings import (
     COPY_TRADING, FUTURES, HUFSA, COPY_2
 )
-from app.utils.binance.utils import is_trade_allowed_by_schedule_utc
+from app.utils.binance.utils import is_trade_allowed_by_schedule_utc, get_mark_price, get_symbol_filters
+from app.utils.binance.validators import (
+    validate_min_notional_for_manual_trading,
+    validate_sl_distance_from_mark_price,
+    validate_risk_reward_ratio_for_manual_trading
+)
+from app.utils.binance.error_handler import (
+    handle_binance_exception,
+    format_binance_error_for_logging
+)
 from app.utils.sqs_evaluator import SQSEvaluator
 from app.utils.user_risk_validator import UserRiskProfileValidator
+from binance.exceptions import BinanceAPIException
 
 # ========== LOGGING CONFIGURATION ==========
 from app.utils.logger_config import get_logger
@@ -61,8 +75,30 @@ STRATEGY = "archer_model"
 app = FastAPI(
     title="crypto-listener-rest",
     description="REST API for immediate crypto trade execution",
-    version="1.0.0"
+    version="1.1.0"  # Updated for improved endpoints
 )
+
+# ========== REQUEST ID MIDDLEWARE (Structured Logging) ==========
+request_id_var: ContextVar[str] = ContextVar('request_id', default=None)
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """
+    Add unique request ID to each request for traceability.
+    Also clears request-level cache from binance_fetch module.
+    """
+    from app.utils.binance.binance_fetch import clear_request_cache
+
+    request_id = str(uuid.uuid4())[:8]
+    request_id_var.set(request_id)
+
+    # Clear request-level cache for new request
+    clear_request_cache()
+
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+# ==============================================================
 
 # Pydantic models for request validation
 class TradeRequest(BaseModel):
@@ -95,6 +131,93 @@ class TradeRequest(BaseModel):
                 "strategy": "archer_model",
                 "signal_quality_score": 8.5,
                 "tier": 3
+            }
+        }
+
+
+# ========== MANUAL TRADING CONTROL MODELS ==========
+class ClosePositionRequest(BaseModel):
+    """Request model for closing a position"""
+    user_id: str = Field(..., description="User ID (copy_trading, futures, hufsa, copy_2)")
+    symbol: str = Field(..., description="Trading pair (e.g., BTCUSDT)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "copy_trading",
+                "symbol": "BTCUSDT"
+            }
+        }
+
+
+class SetStopLossRequest(BaseModel):
+    """Request model for setting stop loss"""
+    user_id: str = Field(..., description="User ID (copy_trading, futures, hufsa, copy_2)")
+    symbol: str = Field(..., description="Trading pair (e.g., BTCUSDT)")
+    stop_loss: float = Field(..., description="New stop loss price")
+    force_adjust: bool = Field(default=False, description="If True, bypass tighten-only validation (allows looser stops)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "copy_trading",
+                "symbol": "BTCUSDT",
+                "stop_loss": 44000.0,
+                "force_adjust": False
+            }
+        }
+
+
+class SetTakeProfitRequest(BaseModel):
+    """Request model for setting take profit"""
+    user_id: str = Field(..., description="User ID (copy_trading, futures, hufsa, copy_2)")
+    symbol: str = Field(..., description="Trading pair (e.g., BTCUSDT)")
+    take_profit: float = Field(..., description="New take profit price")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "copy_trading",
+                "symbol": "BTCUSDT",
+                "take_profit": 47000.0
+            }
+        }
+
+
+class AdjustSLTPRequest(BaseModel):
+    """Request model for adjusting both stop loss and take profit"""
+    user_id: str = Field(..., description="User ID (copy_trading, futures, hufsa, copy_2)")
+    symbol: str = Field(..., description="Trading pair (e.g., BTCUSDT)")
+    stop_loss: float = Field(..., description="New stop loss price")
+    take_profit: float = Field(..., description="New take profit price")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "copy_trading",
+                "symbol": "BTCUSDT",
+                "stop_loss": 44000.0,
+                "take_profit": 47000.0
+            }
+        }
+
+
+class FlexibleAdjustRequest(BaseModel):
+    """Request model for flexible adjustment: SL only, TP only, both, or remove TP"""
+    user_id: str = Field(..., description="User ID (copy_trading, futures, hufsa, copy_2)")
+    symbol: str = Field(..., description="Trading pair (e.g., BTCUSDT)")
+    stop_loss: Optional[float] = Field(default=None, description="New stop loss price (optional)")
+    take_profit: Optional[float] = Field(default=None, description="New take profit price (optional)")
+    remove_take_profit: bool = Field(default=False, description="Remove TP order entirely")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "copy_trading",
+                "symbol": "BTCUSDT",
+                "stop_loss": 44000.0,
+                "take_profit": None,
+                "remove_take_profit": False
             }
         }
 
@@ -551,20 +674,813 @@ async def get_stats():
         raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
 
 
+# ========== MANUAL TRADING CONTROL ENDPOINTS ==========
+
+@app.post("/close-position")
+async def close_position(request: ClosePositionRequest):
+    """
+    Close an open position and cancel all pending orders (SL/TP).
+
+    Args:
+        request: ClosePositionRequest with user_id and symbol
+
+    Returns:
+        JSON with success status and order details
+    """
+    user_id = request.user_id
+    symbol = request.symbol.upper()
+
+    # Validate user_id
+    if user_id not in USERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user_id. Must be one of: {', '.join(USERS)}"
+        )
+
+    try:
+        logger.info(f"📤 Close position request: {user_id}/{symbol}")
+
+        # Get Binance client
+        client = get_binance_client_for_user(user_id)
+
+        # Close position and cancel orders
+        result = close_position_and_cancel_orders(
+            symbol=symbol,
+            client=client,
+            user_id=user_id,
+            strategy=STRATEGY
+        )
+
+        if result.get("success"):
+            logger.info(f"✅ Position closed successfully: {user_id}/{symbol}")
+            return {
+                "success": True,
+                "message": "Position closed successfully",
+                "user_id": user_id,
+                "symbol": symbol,
+                "order_id": result.get("order_id")
+            }
+        else:
+            logger.warning(f"⚠️ Failed to close position: {user_id}/{symbol} - {result.get('error')}")
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "user_id": user_id,
+                "symbol": symbol
+            }
+
+    except HTTPException:
+        raise
+    except BinanceAPIException as e:
+        # PHASE 3: Specific Binance error handling
+        error_msg = format_binance_error_for_logging(e, "close_position", user_id, symbol)
+        logger.error(f"❌ {error_msg}")
+        raise handle_binance_exception(e, "close position", user_id, symbol)
+    except Exception as e:
+        logger.error(f"❌ Error closing position: {user_id}/{symbol} - {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to close position: {str(e)}"
+        )
+
+
+@app.post("/set-stop-loss")
+async def set_stop_loss(request: SetStopLossRequest):
+    """
+    Update only the stop loss of an open position.
+    By default, validates that the new SL is safer than the previous one (tighten-only).
+    Use force_adjust=True to bypass this validation (use with caution).
+
+    Args:
+        request: SetStopLossRequest with user_id, symbol, stop_loss, and optional force_adjust
+
+    Returns:
+        JSON with success status and updated stop loss details
+    """
+    user_id = request.user_id
+    symbol = request.symbol.upper()
+    stop_loss = request.stop_loss
+
+    # Validate user_id
+    if user_id not in USERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user_id. Must be one of: {', '.join(USERS)}"
+        )
+
+    try:
+        logger.info(f"🛑 Set stop loss request: {user_id}/{symbol} @ {stop_loss}")
+
+        # Get Binance client and mark price
+        client = get_binance_client_for_user(user_id)
+        mark_price = get_mark_price(symbol, client)
+
+        # Get current position to determine direction
+        positions = client.futures_position_information(symbol=symbol)
+        if not positions or float(positions[0].get("positionAmt", "0")) == 0.0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open position found for {symbol}"
+            )
+
+        position_amt = float(positions[0]["positionAmt"])
+        direction = "LONG" if position_amt > 0 else "SHORT"
+
+        # Validate stop loss based on direction
+        if direction == "LONG" and stop_loss >= mark_price:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid SL for LONG (expected stop_loss < mark_price). Mark: {mark_price:.2f}, Requested SL: {stop_loss:.2f}"
+            )
+        elif direction == "SHORT" and stop_loss <= mark_price:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid SL for SHORT (expected stop_loss > mark_price). Mark: {mark_price:.2f}, Requested SL: {stop_loss:.2f}"
+            )
+
+        # ===== ENHANCED VALIDATIONS (Phase 2) =====
+
+        # Get symbol filters for enhanced validations
+        filters = get_symbol_filters(symbol, client)
+
+        # 1. Validate MIN_NOTIONAL
+        is_valid, error = validate_min_notional_for_manual_trading(
+            symbol=symbol,
+            position_amt=position_amt,
+            price=stop_loss,
+            filters=filters
+        )
+        if not is_valid:
+            logger.warning(f"⚠️ MIN_NOTIONAL validation failed for {user_id}/{symbol}: {error}")
+            raise HTTPException(status_code=400, detail=error)
+
+        # 2. Validate SL distance from mark price (minimum 0.1% to avoid immediate trigger)
+        is_valid, error = validate_sl_distance_from_mark_price(
+            symbol=symbol,
+            stop_loss=stop_loss,
+            mark_price=mark_price,
+            direction=direction,
+            min_distance_pct=0.1
+        )
+        if not is_valid:
+            logger.warning(f"⚠️ SL distance validation failed for {user_id}/{symbol}: {error}")
+            raise HTTPException(status_code=400, detail=error)
+
+        # ==========================================
+
+        # Adjust stop loss only
+        result = adjust_stop_only_for_open_position(
+            symbol=symbol,
+            new_stop=stop_loss,
+            client=client,
+            user_id=user_id,
+            enforce_tighten=not request.force_adjust  # Allow bypass of tighten-only mode
+        )
+
+        if result.get("success"):
+            logger.info(f"✅ Stop loss updated: {user_id}/{symbol} @ {stop_loss}")
+            return {
+                "success": True,
+                "message": "Stop loss updated successfully",
+                "user_id": user_id,
+                "symbol": symbol,
+                "direction": direction,
+                "stop_loss": result.get("stop"),
+                "mark_price": mark_price,
+                "previous_stop": result.get("previous_stop"),
+                "level_applied": result.get("level_applied"),
+                "redis_updated": result.get("redis_updated", False)
+            }
+        else:
+            logger.warning(f"⚠️ Failed to update stop loss: {user_id}/{symbol} - {result.get('error')}")
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "user_id": user_id,
+                "symbol": symbol,
+                "mark_price": mark_price
+            }
+
+    except HTTPException:
+        raise
+    except BinanceAPIException as e:
+        # PHASE 3: Specific Binance error handling
+        error_msg = format_binance_error_for_logging(e, "set_stop_loss", user_id, symbol)
+        logger.error(f"❌ {error_msg}")
+        raise handle_binance_exception(e, "set stop loss", user_id, symbol)
+    except Exception as e:
+        logger.error(f"❌ Error setting stop loss: {user_id}/{symbol} - {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to set stop loss: {str(e)}"
+        )
+
+
+@app.post("/set-take-profit")
+async def set_take_profit(request: SetTakeProfitRequest):
+    """
+    Update only the take profit of an open position.
+    Keeps the existing stop loss intact.
+
+    Args:
+        request: SetTakeProfitRequest with user_id, symbol, and take_profit
+
+    Returns:
+        JSON with success status and updated take profit details
+    """
+    user_id = request.user_id
+    symbol = request.symbol.upper()
+    take_profit = request.take_profit
+
+    # Validate user_id
+    if user_id not in USERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user_id. Must be one of: {', '.join(USERS)}"
+        )
+
+    try:
+        logger.info(f"🎯 Set take profit request: {user_id}/{symbol} @ {take_profit}")
+
+        # Get Binance client and mark price
+        client = get_binance_client_for_user(user_id)
+        mark_price = get_mark_price(symbol, client)
+
+        # Get current position to determine direction
+        positions = client.futures_position_information(symbol=symbol)
+        if not positions or float(positions[0].get("positionAmt", "0")) == 0.0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open position found for {symbol}"
+            )
+
+        position_amt = float(positions[0]["positionAmt"])
+        direction = "LONG" if position_amt > 0 else "SHORT"
+
+        # Validate take profit based on direction
+        if direction == "LONG" and take_profit <= mark_price:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid TP for LONG (expected take_profit > mark_price). Mark: {mark_price:.2f}, Requested TP: {take_profit:.2f}"
+            )
+        elif direction == "SHORT" and take_profit >= mark_price:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid TP for SHORT (expected take_profit < mark_price). Mark: {mark_price:.2f}, Requested TP: {take_profit:.2f}"
+            )
+
+        # ===== ENHANCED VALIDATIONS (Phase 2) =====
+
+        # Get symbol filters for enhanced validations
+        filters = get_symbol_filters(symbol, client)
+
+        # Validate MIN_NOTIONAL for TP order
+        is_valid, error = validate_min_notional_for_manual_trading(
+            symbol=symbol,
+            position_amt=position_amt,
+            price=take_profit,
+            filters=filters
+        )
+        if not is_valid:
+            logger.warning(f"⚠️ MIN_NOTIONAL validation failed for {user_id}/{symbol}: {error}")
+            raise HTTPException(status_code=400, detail=error)
+
+        # ==========================================
+
+        # Get current stop loss from open orders
+        open_orders = client.futures_get_open_orders(symbol=symbol)
+        current_sl = None
+
+        # Try traditional orders first
+        for order in open_orders:
+            if order.get("type") == "STOP_MARKET":
+                current_sl = float(order.get("stopPrice", 0))
+                break
+
+        # If not found in traditional, check Algo Orders
+        if current_sl is None:
+            try:
+                algo_response = client._request_futures_api('get', 'openAlgoOrders', signed=True, data={"symbol": symbol})
+                algo_orders = []
+                if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                    algo_orders = algo_response["openOrders"]
+                elif isinstance(algo_response, list):
+                    algo_orders = algo_response
+
+                for algo_order in algo_orders:
+                    order_type = algo_order.get("algoType") or algo_order.get("type", "")
+                    if order_type in ["STOP_MARKET", "STOP"]:
+                        current_sl = float(algo_order.get("stopPrice", 0))
+                        break
+            except Exception as e:
+                logger.warning(f"⚠️ Could not fetch Algo Orders: {e}")
+
+        if current_sl is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No stop loss order found for {symbol}. Please use /adjust-sl-tp to set both."
+            )
+
+        # Adjust both SL (keep current) and TP (new value)
+        result = adjust_sl_tp_for_open_position(
+            symbol=symbol,
+            new_stop=current_sl,
+            new_target=take_profit,
+            client=client,
+            user_id=user_id
+        )
+
+        if result.get("success"):
+            logger.info(f"✅ Take profit updated: {user_id}/{symbol} @ {take_profit}")
+            return {
+                "success": True,
+                "message": "Take profit updated successfully",
+                "user_id": user_id,
+                "symbol": symbol,
+                "direction": direction,
+                "take_profit": result.get("target"),
+                "mark_price": mark_price,
+                "stop_loss": result.get("stop")
+            }
+        else:
+            logger.warning(f"⚠️ Failed to update take profit: {user_id}/{symbol} - {result.get('error')}")
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "user_id": user_id,
+                "symbol": symbol,
+                "mark_price": mark_price
+            }
+
+    except HTTPException:
+        raise
+    except BinanceAPIException as e:
+        # PHASE 3: Specific Binance error handling
+        error_msg = format_binance_error_for_logging(e, "set_take_profit", user_id, symbol)
+        logger.error(f"❌ {error_msg}")
+        raise handle_binance_exception(e, "set take profit", user_id, symbol)
+    except Exception as e:
+        logger.error(f"❌ Error setting take profit: {user_id}/{symbol} - {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to set take profit: {str(e)}"
+        )
+
+
+@app.post("/adjust-sl-tp")
+async def adjust_sl_tp(request: AdjustSLTPRequest):
+    """
+    Update both stop loss and take profit simultaneously.
+
+    Args:
+        request: AdjustSLTPRequest with user_id, symbol, stop_loss, and take_profit
+
+    Returns:
+        JSON with success status and updated SL/TP details
+    """
+    user_id = request.user_id
+    symbol = request.symbol.upper()
+    stop_loss = request.stop_loss
+    take_profit = request.take_profit
+
+    # Validate user_id
+    if user_id not in USERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user_id. Must be one of: {', '.join(USERS)}"
+        )
+
+    try:
+        logger.info(f"⚙️ Adjust SL/TP request: {user_id}/{symbol} - SL: {stop_loss}, TP: {take_profit}")
+
+        # Get Binance client and mark price
+        client = get_binance_client_for_user(user_id)
+        mark_price = get_mark_price(symbol, client)
+
+        # Get current position to determine direction
+        positions = client.futures_position_information(symbol=symbol)
+        if not positions or float(positions[0].get("positionAmt", "0")) == 0.0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open position found for {symbol}"
+            )
+
+        position_amt = float(positions[0]["positionAmt"])
+        direction = "LONG" if position_amt > 0 else "SHORT"
+
+        # Validate stop loss and take profit based on direction
+        if direction == "LONG":
+            if stop_loss >= mark_price:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid SL for LONG (expected stop_loss < mark_price). Mark: {mark_price:.2f}, Requested SL: {stop_loss:.2f}"
+                )
+            if take_profit <= mark_price:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid TP for LONG (expected take_profit > mark_price). Mark: {mark_price:.2f}, Requested TP: {take_profit:.2f}"
+                )
+        else:  # SHORT
+            if stop_loss <= mark_price:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid SL for SHORT (expected stop_loss > mark_price). Mark: {mark_price:.2f}, Requested SL: {stop_loss:.2f}"
+                )
+            if take_profit >= mark_price:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid TP for SHORT (expected take_profit < mark_price). Mark: {mark_price:.2f}, Requested TP: {take_profit:.2f}"
+                )
+
+        # ===== ENHANCED VALIDATIONS (Phase 2) =====
+
+        # Get symbol filters for enhanced validations
+        filters = get_symbol_filters(symbol, client)
+
+        # 1. Validate MIN_NOTIONAL for SL order
+        is_valid, error = validate_min_notional_for_manual_trading(
+            symbol=symbol,
+            position_amt=position_amt,
+            price=stop_loss,
+            filters=filters
+        )
+        if not is_valid:
+            logger.warning(f"⚠️ MIN_NOTIONAL validation failed for SL ({user_id}/{symbol}): {error}")
+            raise HTTPException(status_code=400, detail=f"Stop Loss: {error}")
+
+        # 2. Validate MIN_NOTIONAL for TP order
+        is_valid, error = validate_min_notional_for_manual_trading(
+            symbol=symbol,
+            position_amt=position_amt,
+            price=take_profit,
+            filters=filters
+        )
+        if not is_valid:
+            logger.warning(f"⚠️ MIN_NOTIONAL validation failed for TP ({user_id}/{symbol}): {error}")
+            raise HTTPException(status_code=400, detail=f"Take Profit: {error}")
+
+        # 3. Validate SL distance from mark price (minimum 0.1% to avoid immediate trigger)
+        is_valid, error = validate_sl_distance_from_mark_price(
+            symbol=symbol,
+            stop_loss=stop_loss,
+            mark_price=mark_price,
+            direction=direction,
+            min_distance_pct=0.1
+        )
+        if not is_valid:
+            logger.warning(f"⚠️ SL distance validation failed for {user_id}/{symbol}: {error}")
+            raise HTTPException(status_code=400, detail=error)
+
+        # 4. Validate Risk-Reward ratio (minimum 1.0 by default)
+        entry_price = float(positions[0]["entryPrice"])
+        is_valid, error = validate_risk_reward_ratio_for_manual_trading(
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            direction=direction,
+            min_rr_ratio=1.0
+        )
+        if not is_valid:
+            logger.warning(f"⚠️ Risk-Reward validation failed for {user_id}/{symbol}: {error}")
+            # Make RR validation a warning, not a hard error (user can override)
+            logger.warning(f"🔔 Proceeding anyway - user may have valid reasons for low RR")
+
+        # ==========================================
+
+        # Adjust both SL and TP
+        result = adjust_sl_tp_for_open_position(
+            symbol=symbol,
+            new_stop=stop_loss,
+            new_target=take_profit,
+            client=client,
+            user_id=user_id
+        )
+
+        if result.get("success"):
+            logger.info(f"✅ SL/TP updated: {user_id}/{symbol} - SL: {stop_loss}, TP: {take_profit}")
+            return {
+                "success": True,
+                "message": "Stop loss and take profit updated successfully",
+                "user_id": user_id,
+                "symbol": symbol,
+                "direction": direction,
+                "stop_loss": result.get("stop"),
+                "take_profit": result.get("target"),
+                "mark_price": mark_price
+            }
+        else:
+            logger.warning(f"⚠️ Failed to update SL/TP: {user_id}/{symbol} - {result.get('error')}")
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "user_id": user_id,
+                "symbol": symbol,
+                "mark_price": mark_price
+            }
+
+    except HTTPException:
+        raise
+    except BinanceAPIException as e:
+        # PHASE 3: Specific Binance error handling
+        error_msg = format_binance_error_for_logging(e, "adjust_sl_tp", user_id, symbol)
+        logger.error(f"❌ {error_msg}")
+        raise handle_binance_exception(e, "adjust SL/TP", user_id, symbol)
+    except Exception as e:
+        logger.error(f"❌ Error adjusting SL/TP: {user_id}/{symbol} - {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to adjust SL/TP: {str(e)}"
+        )
+
+
+@app.get("/position-status/{user_id}/{symbol}")
+async def get_position_status(user_id: str, symbol: str):
+    """
+    Get current status of an open position including entry, SL, TP, and unrealized PNL.
+
+    Args:
+        user_id: User identifier (path parameter)
+        symbol: Trading pair (path parameter, e.g., BTCUSDT)
+
+    Returns:
+        JSON with position details
+
+    Example:
+        GET /position-status/copy_trading/BTCUSDT
+    """
+    symbol = symbol.upper()
+
+    # Validate user_id
+    if user_id not in USERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user_id. Must be one of: {', '.join(USERS)}"
+        )
+
+    try:
+        logger.info(f"📊 Position status request: {user_id}/{symbol}")
+
+        # Get Binance client
+        client = get_binance_client_for_user(user_id)
+
+        # Get position information
+        from app.utils.binance.binance_fetch import get_position_cached
+        positions = get_position_cached(symbol, client, user_id)
+
+        if not positions or float(positions[0].get("positionAmt", "0")) == 0.0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open position found for {symbol}"
+            )
+
+        position = positions[0]
+        position_amt = float(position["positionAmt"])
+
+        # Get current SL/TP from orders
+        sl_price, tp_price = get_current_sl_tp(symbol, client)
+
+        # Get mark price
+        mark_price = get_mark_price(symbol, client)
+
+        # Prepare response
+        response = {
+            "success": True,
+            "user_id": user_id,
+            "symbol": symbol,
+            "direction": "LONG" if position_amt > 0 else "SHORT",
+            "entry_price": float(position["entryPrice"]),
+            "position_size": abs(position_amt),
+            "unrealized_pnl": float(position["unRealizedProfit"]),
+            "mark_price": mark_price,
+            "stop_loss": sl_price,
+            "take_profit": tp_price,
+            "leverage": int(position["leverage"]),
+            "margin_type": position.get("marginType", "cross"),
+            "liquidation_price": float(position.get("liquidationPrice", 0)),
+            "notional": abs(position_amt * mark_price)
+        }
+
+        # Calculate risk/reward if both SL and TP are set
+        if sl_price and tp_price:
+            entry = float(position["entryPrice"])
+            risk = abs(entry - sl_price)
+            reward = abs(tp_price - entry)
+            response["risk_reward_ratio"] = round(reward / risk, 2) if risk > 0 else None
+
+        logger.info(f"✅ Position status retrieved: {user_id}/{symbol} - {response['direction']} @ {response['entry_price']}")
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting position status: {user_id}/{symbol} - {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get position status: {str(e)}"
+        )
+
+
+@app.patch("/adjust-sl-tp-flexible")
+async def adjust_sl_tp_flexible(request: FlexibleAdjustRequest):
+    """
+    Flexible adjustment: update SL only, TP only, both, or remove TP.
+
+    This endpoint allows partial updates to SL/TP without requiring both parameters.
+
+    Args:
+        request: FlexibleAdjustRequest with optional stop_loss and take_profit
+
+    Returns:
+        JSON with success status and updated values
+
+    Examples:
+        - Adjust only SL: {"user_id": "copy_trading", "symbol": "BTCUSDT", "stop_loss": 44000}
+        - Adjust only TP: {"user_id": "copy_trading", "symbol": "BTCUSDT", "take_profit": 47000}
+        - Adjust both: {"user_id": "copy_trading", "symbol": "BTCUSDT", "stop_loss": 44000, "take_profit": 47000}
+        - Remove TP: {"user_id": "copy_trading", "symbol": "BTCUSDT", "remove_take_profit": true}
+    """
+    user_id = request.user_id
+    symbol = request.symbol.upper()
+
+    # Validate user_id
+    if user_id not in USERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user_id. Must be one of: {', '.join(USERS)}"
+        )
+
+    # Validate that at least one action is specified
+    if not any([request.stop_loss, request.take_profit, request.remove_take_profit]):
+        raise HTTPException(
+            status_code=400,
+            detail="Must provide stop_loss, take_profit, or remove_take_profit=true"
+        )
+
+    try:
+        logger.info(f"🔧 Flexible adjust request: {user_id}/{symbol}")
+
+        # Get Binance client
+        client = get_binance_client_for_user(user_id)
+
+        # Get mark price for validation
+        mark_price = get_mark_price(symbol, client)
+
+        # Verify position exists
+        from app.utils.binance.binance_fetch import get_position_cached
+        positions = get_position_cached(symbol, client, user_id)
+
+        if not positions or float(positions[0].get("positionAmt", "0")) == 0.0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open position found for {symbol}"
+            )
+
+        position_amt = float(positions[0]["positionAmt"])
+        direction = "LONG" if position_amt > 0 else "SHORT"
+
+        # Handle remove_take_profit
+        if request.remove_take_profit:
+            logger.info(f"🗑️ Removing TP for {user_id}/{symbol}")
+            result = cancel_tp_only(symbol, client, user_id)
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "message": "Take profit removed successfully",
+                    "user_id": user_id,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "canceled_count": result.get("canceled_count", 0),
+                    "mark_price": mark_price
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Failed to remove TP"),
+                    "user_id": user_id,
+                    "symbol": symbol
+                }
+
+        # Validate prices based on direction
+        if request.stop_loss:
+            if direction == "LONG" and request.stop_loss >= mark_price:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid SL for LONG (expected stop_loss < mark_price). Mark: {mark_price:.2f}, Requested SL: {request.stop_loss:.2f}"
+                )
+            elif direction == "SHORT" and request.stop_loss <= mark_price:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid SL for SHORT (expected stop_loss > mark_price). Mark: {mark_price:.2f}, Requested SL: {request.stop_loss:.2f}"
+                )
+
+        if request.take_profit:
+            if direction == "LONG" and request.take_profit <= mark_price:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid TP for LONG (expected take_profit > mark_price). Mark: {mark_price:.2f}, Requested TP: {request.take_profit:.2f}"
+                )
+            elif direction == "SHORT" and request.take_profit >= mark_price:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid TP for SHORT (expected take_profit < mark_price). Mark: {mark_price:.2f}, Requested TP: {request.take_profit:.2f}"
+                )
+
+        # Execute adjustment based on what was provided
+        if request.stop_loss and request.take_profit:
+            # Adjust both
+            logger.info(f"⚙️ Adjusting both SL and TP: {user_id}/{symbol}")
+            result = adjust_sl_tp_for_open_position(
+                symbol=symbol,
+                new_stop=request.stop_loss,
+                new_target=request.take_profit,
+                client=client,
+                user_id=user_id
+            )
+
+        elif request.stop_loss:
+            # Adjust only SL
+            logger.info(f"🛑 Adjusting only SL: {user_id}/{symbol} @ {request.stop_loss}")
+            result = adjust_stop_only_for_open_position(
+                symbol=symbol,
+                new_stop=request.stop_loss,
+                client=client,
+                user_id=user_id
+            )
+
+        elif request.take_profit:
+            # Adjust only TP (need to keep current SL)
+            logger.info(f"🎯 Adjusting only TP: {user_id}/{symbol} @ {request.take_profit}")
+
+            # Get current SL
+            sl_current, _ = get_current_sl_tp(symbol, client)
+            if sl_current is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No current SL found for {symbol}. Use /adjust-sl-tp to set both SL and TP."
+                )
+
+            result = adjust_sl_tp_for_open_position(
+                symbol=symbol,
+                new_stop=sl_current,
+                new_target=request.take_profit,
+                client=client,
+                user_id=user_id
+            )
+
+        # Return response
+        if result.get("success"):
+            logger.info(f"✅ Flexible adjustment successful: {user_id}/{symbol}")
+            return {
+                "success": True,
+                "message": "Position adjusted successfully",
+                "user_id": user_id,
+                "symbol": symbol,
+                "direction": direction,
+                "stop_loss": result.get("stop"),
+                "take_profit": result.get("target"),
+                "mark_price": mark_price
+            }
+        else:
+            logger.warning(f"⚠️ Flexible adjustment failed: {user_id}/{symbol} - {result.get('error')}")
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "user_id": user_id,
+                "symbol": symbol,
+                "mark_price": mark_price
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error in flexible adjustment: {user_id}/{symbol} - {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to adjust position: {str(e)}"
+        )
+
+
 @app.get("/")
 async def root():
     """Root endpoint with service information"""
     return {
         "service": "crypto-listener-rest",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "description": "REST API for immediate crypto trade execution",
         "endpoints": {
             "POST /execute-trade": "Execute a trade immediately",
             "POST /guardian": "Execute guardian action (close/adjust/half_close)",
+            "POST /close-position": "Close an open position",
+            "POST /set-stop-loss": "Update stop loss of open position",
+            "POST /set-take-profit": "Update take profit of open position",
+            "POST /adjust-sl-tp": "Update both SL and TP of open position",
             "GET /health": "Health check",
             "GET /stats": "Get trade statistics",
             "GET /docs": "Interactive API documentation"
-        }
+        },
+        "documentation": "See /docs for interactive API documentation or MANUAL_TRADING_API.md for manual trading endpoints"
     }
 
 

@@ -116,6 +116,16 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
         print(f"❌ Cantidad inválida para {symbol} ({user_id})")
         return {"success": False, "error": "Invalid quantity"}
 
+    # 8.5. Ajustar precios SL/TP al tickSize de Binance ANTES de validar
+    tick_size = float(filters["PRICE_FILTER"]["tickSize"])
+    stop_loss_original = stop_loss
+    target_price_original = target_price
+    stop_loss = adjust_price_to_tick(stop_loss, tick_size)
+    target_price = adjust_price_to_tick(target_price, tick_size)
+
+    if stop_loss != stop_loss_original or target_price != target_price_original:
+        print(f"✅ Precios ajustados al tickSize={tick_size}: SL {stop_loss_original}→{stop_loss}, TP {target_price_original}→{target_price}")
+
     # 9. Validar precios SL/TP con PRICE_FILTER y tickSize
     if not validate_price_filters(stop_loss, target_price, filters):
         print(f"❌ SL o TP fuera de rango permitido para {symbol}")
@@ -411,22 +421,61 @@ def adjust_sl_tp_for_open_position(symbol: str, new_stop: float, new_target: flo
         if not tp_res:
             return {"success": False, "error": "Failed to create TAKE_PROFIT_MARKET"}
 
+        # PHASE 3: Verificar que ambas órdenes SL/TP realmente existen en Binance (post-creation verification)
+        sl_verified = False
+        tp_verified = False
+        try:
+            import time
+            time.sleep(0.3)  # Breve pausa para permitir propagación en Binance
+            algo_response = client._request_futures_api('get', 'openAlgoOrders', signed=True, data={"symbol": symbol})
+            algo_orders = []
+            if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                algo_orders = algo_response["openOrders"]
+            elif isinstance(algo_response, list):
+                algo_orders = algo_response
+
+            # Buscar las órdenes recién creadas por algoId
+            created_sl_algo_id = sl_res.get("algoId")
+            created_tp_algo_id = tp_res.get("algoId")
+
+            for algo_order in algo_orders:
+                order_algo_id = algo_order.get("algoId")
+                if order_algo_id == created_sl_algo_id:
+                    sl_verified = True
+                    print(f"✅ SL order verified in Binance (algoId: {created_sl_algo_id})")
+                elif order_algo_id == created_tp_algo_id:
+                    tp_verified = True
+                    print(f"✅ TP order verified in Binance (algoId: {created_tp_algo_id})")
+
+            if not sl_verified:
+                print(f"⚠️ WARNING: SL order created but not found in Binance open orders (algoId: {created_sl_algo_id})")
+                print(f"⚠️ Position may be unprotected. Manual verification recommended.")
+
+            if not tp_verified:
+                print(f"⚠️ WARNING: TP order created but not found in Binance open orders (algoId: {created_tp_algo_id})")
+                print(f"⚠️ Position may not auto-close at target. Manual verification recommended.")
+
+        except Exception as e:
+            print(f"⚠️ Could not verify SL/TP order creation: {e}")
+
         return {
             "success": True,
             "direction": direction,
             "stop": stop_r,
-            "target": target_r
+            "target": target_r,
+            "sl_verified": sl_verified,
+            "tp_verified": tp_verified
         }
     except Exception as e:
         return {"success": False, "error": f"adjust_sl_tp failed: {e}"}
 
 
-def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, user_id: str, level_metadata: dict = None) -> dict:
+def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, user_id: str, level_metadata: dict = None, enforce_tighten: bool = True) -> dict:
     """
     Ajusta SOLO el Stop Loss de una posición abierta:
       - Detecta dirección por positionAmt (BUY si >0, SELL si <0)
       - Obtiene el STOP_MARKET actual desde órdenes abiertas
-      - Enforce: tighten-only (nunca aflojar el SL)
+      - Enforce: tighten-only (nunca aflojar el SL) - configurable via enforce_tighten
       - Cancela el/los STOP_MARKET actuales y crea uno nuevo
       - No toca el TP existente
       - Actualiza Redis con tracking de nivel aplicado (si level_metadata provisto)
@@ -442,6 +491,8 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                 "level_threshold_pct": 35,
                 "previous_level": "towards_be_20"
             }
+        enforce_tighten: If True (default), only allows tightening SL (safer).
+                        If False, allows loosening SL (use with caution).
 
     Returns:
         Dict with success, stop, level_applied, redis_updated, etc.
@@ -512,15 +563,19 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
             # No hay SL existente -> permitir crear uno directamente (pero aún validar sanity)
             pass
         else:
-            # 3) Regla tighten-only
-            if direction == "BUY":
-                # para LONG, solo permitir SL >= current_stop
-                if new_stop_f < current_stop:
-                    return {"success": False, "error": f"Looser stop not allowed (current {current_stop}, new {new_stop_f})"}
+            # 3) Regla tighten-only (opcional según enforce_tighten)
+            if enforce_tighten:
+                if direction == "BUY":
+                    # para LONG, solo permitir SL >= current_stop
+                    if new_stop_f < current_stop:
+                        return {"success": False, "error": f"Looser stop not allowed (current {current_stop}, new {new_stop_f})"}
+                else:
+                    # para SHORT, solo permitir SL <= current_stop
+                    if new_stop_f > current_stop:
+                        return {"success": False, "error": f"Looser stop not allowed (current {current_stop}, new {new_stop_f})"}
             else:
-                # para SHORT, solo permitir SL <= current_stop
-                if new_stop_f > current_stop:
-                    return {"success": False, "error": f"Looser stop not allowed (current {current_stop}, new {new_stop_f})"}
+                # force_adjust=True - bypass tighten-only validation
+                print(f"⚠️ force_adjust enabled: allowing looser SL (current {current_stop} → new {new_stop_f})")
 
         # 4) Chequeo de sanidad respecto al mark actual
         mark_price = get_mark_price(symbol, client)
@@ -552,6 +607,33 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
         sl_res = create_stop_loss_order(symbol, exit_side, new_stop_f, client, user_id)
         if not sl_res:
             return {"success": False, "error": "Failed to create new STOP_MARKET"}
+
+        # 6.5) PHASE 3: Verificar que la orden SL realmente existe en Binance (post-creation verification)
+        sl_verified = False
+        try:
+            time.sleep(0.3)  # Breve pausa para permitir propagación en Binance
+            algo_response = client._request_futures_api('get', 'openAlgoOrders', signed=True, data={"symbol": symbol})
+            algo_orders = []
+            if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                algo_orders = algo_response["openOrders"]
+            elif isinstance(algo_response, list):
+                algo_orders = algo_response
+
+            # Buscar la orden recién creada por algoId
+            created_algo_id = sl_res.get("algoId")
+            if created_algo_id:
+                for algo_order in algo_orders:
+                    if algo_order.get("algoId") == created_algo_id:
+                        sl_verified = True
+                        print(f"✅ SL order verified in Binance (algoId: {created_algo_id})")
+                        break
+
+            if not sl_verified:
+                print(f"⚠️ WARNING: SL order created but not found in Binance open orders (algoId: {created_algo_id})")
+                print(f"⚠️ Position may be unprotected. Manual verification recommended.")
+                # No retornamos error para no bloquear el flujo, pero dejamos warning en logs
+        except Exception as e:
+            print(f"⚠️ Could not verify SL order creation: {e}")
 
         # 7) Actualizar Redis para que crypto-guardian use el valor actualizado
         import json
@@ -751,6 +833,136 @@ def half_close_and_move_be(symbol: str, client, user_id: str) -> dict:
     except Exception as e:
         print("Exception in half_close_and_move_be:", e)
         return {"success": False, "error": f"half_close_and_move_be failed: {e}"}
+
+
+# NEW: Get current SL/TP from open orders
+def get_current_sl_tp(symbol: str, client) -> tuple:
+    """
+    Get current stop loss and take profit prices from open orders.
+
+    Searches in both traditional orders and Algo Orders (new endpoint).
+
+    Args:
+        symbol: Trading pair (e.g., "BTCUSDT")
+        client: Binance client instance
+
+    Returns:
+        Tuple of (sl_price, tp_price) where each can be None if not found
+
+    Example:
+        >>> client = get_binance_client_for_user("copy_trading")
+        >>> sl, tp = get_current_sl_tp("BTCUSDT", client)
+        >>> print(f"Current SL: {sl}, TP: {tp}")
+    """
+    sl_price, tp_price = None, None
+
+    try:
+        # Check traditional orders first
+        open_orders = client.futures_get_open_orders(symbol=symbol)
+        for order in open_orders:
+            order_type = order.get("type", "")
+            if order_type == "STOP_MARKET" and sl_price is None:
+                sl_price = float(order.get("stopPrice", 0))
+            elif order_type == "TAKE_PROFIT_MARKET" and tp_price is None:
+                tp_price = float(order.get("stopPrice", 0))
+
+        # Check Algo Orders (new endpoint since 2025-12-09)
+        try:
+            algo_response = client._request_futures_api(
+                'get',
+                'openAlgoOrders',
+                signed=True,
+                data={"symbol": symbol.upper()}
+            )
+
+            # Handle different response formats
+            algo_orders = []
+            if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                algo_orders = algo_response["openOrders"]
+            elif isinstance(algo_response, list):
+                algo_orders = algo_response
+
+            for order in algo_orders:
+                algo_type = order.get("algoType") or order.get("type", "")
+                trigger_price = float(order.get("triggerPrice", 0))
+
+                if algo_type in ["STOP_MARKET", "STOP"] and sl_price is None:
+                    sl_price = trigger_price
+                elif algo_type in ["TAKE_PROFIT_MARKET", "TAKE_PROFIT"] and tp_price is None:
+                    tp_price = trigger_price
+
+        except Exception as e:
+            print(f"⚠️ Could not fetch Algo Orders for {symbol}: {e}")
+
+    except Exception as e:
+        print(f"⚠️ Error getting current SL/TP for {symbol}: {e}")
+
+    return sl_price, tp_price
+
+
+# NEW: Cancel only TP orders (keep SL intact)
+def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
+    """
+    Cancel only take profit orders, keeping stop loss intact.
+
+    Args:
+        symbol: Trading pair (e.g., "BTCUSDT")
+        client: Binance client instance
+        user_id: User identifier (for logging)
+
+    Returns:
+        Dict with success status
+    """
+    try:
+        canceled_count = 0
+
+        # Cancel traditional TP orders
+        open_orders = client.futures_get_open_orders(symbol=symbol)
+        for order in open_orders:
+            if order.get("type") == "TAKE_PROFIT_MARKET":
+                client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
+                canceled_count += 1
+                print(f"✅ Canceled traditional TP order {order['orderId']} for {symbol}")
+
+        # Cancel Algo TP orders
+        try:
+            algo_response = client._request_futures_api(
+                'get',
+                'openAlgoOrders',
+                signed=True,
+                data={"symbol": symbol.upper()}
+            )
+
+            algo_orders = []
+            if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                algo_orders = algo_response["openOrders"]
+            elif isinstance(algo_response, list):
+                algo_orders = algo_response
+
+            for order in algo_orders:
+                algo_type = order.get("algoType") or order.get("type", "")
+                if algo_type in ["TAKE_PROFIT_MARKET", "TAKE_PROFIT"]:
+                    algo_id = order.get("algoId")
+                    client._request_futures_api(
+                        'delete',
+                        'algoOrder',
+                        signed=True,
+                        data={"symbol": symbol.upper(), "algoId": algo_id}
+                    )
+                    canceled_count += 1
+                    print(f"✅ Canceled Algo TP order {algo_id} for {symbol}")
+
+        except Exception as e:
+            print(f"⚠️ Could not cancel Algo TP orders: {e}")
+
+        return {
+            "success": True,
+            "canceled_count": canceled_count,
+            "message": f"Canceled {canceled_count} TP order(s)"
+        }
+
+    except Exception as e:
+        return {"success": False, "error": f"cancel_tp_only failed: {e}"}
 
 
 if __name__ == "__main__":

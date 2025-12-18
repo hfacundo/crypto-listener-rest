@@ -912,3 +912,151 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
     except Exception as e:
         print(f"❌ Error al cancelar órdenes huérfanas para {symbol} ({user_id}): {e}")
         traceback.print_exc()
+
+
+# ========== ENHANCED VALIDATIONS FOR MANUAL TRADING ENDPOINTS ==========
+
+def validate_min_notional_for_manual_trading(
+    symbol: str,
+    position_amt: float,
+    price: float,
+    filters: dict
+) -> tuple:
+    """
+    Validate that order meets MIN_NOTIONAL requirements for manual trading operations.
+
+    This is critical for SL/TP orders - if they don't meet MIN_NOTIONAL, they will be
+    rejected by Binance, leaving the position without protection.
+
+    Args:
+        symbol: Trading pair (e.g., "BTCUSDT")
+        position_amt: Position amount (size)
+        price: Order price (SL or TP)
+        filters: Symbol filters from exchange_info
+
+    Returns:
+        Tuple of (is_valid: bool, error_message: str)
+
+    Example:
+        >>> is_valid, error = validate_min_notional_for_manual_trading(
+        ...     "SOLUSDT", 0.01, 115.98, filters
+        ... )
+        >>> if not is_valid:
+        ...     print(f"Error: {error}")
+    """
+    try:
+        notional = abs(position_amt * price)
+        min_notional = float(filters.get("MIN_NOTIONAL", {}).get("notional", 0))
+
+        if min_notional > 0 and notional < min_notional:
+            return False, (
+                f"Order notional {notional:.4f} USDT is below minimum {min_notional:.4f} USDT for {symbol}. "
+                f"Position size ({abs(position_amt)}) * Price ({price}) must be >= {min_notional:.4f} USDT"
+            )
+
+        return True, ""
+
+    except Exception as e:
+        return False, f"Error validating MIN_NOTIONAL: {str(e)}"
+
+
+def validate_sl_distance_from_mark_price(
+    symbol: str,
+    stop_loss: float,
+    mark_price: float,
+    direction: str,
+    min_distance_pct: float = 0.1
+) -> tuple:
+    """
+    Validate that stop loss is not too close to mark price.
+
+    Prevents SL orders that would execute immediately due to normal market noise.
+    Default minimum distance is 0.1% (10 basis points).
+
+    Args:
+        symbol: Trading pair
+        stop_loss: Stop loss price
+        mark_price: Current mark price
+        direction: Position direction ("LONG" or "SHORT")
+        min_distance_pct: Minimum distance as percentage (default: 0.1%)
+
+    Returns:
+        Tuple of (is_valid: bool, error_message: str)
+
+    Example:
+        >>> is_valid, error = validate_sl_distance_from_mark_price(
+        ...     "BTCUSDT", 44990.0, 45000.0, "LONG", min_distance_pct=0.1
+        ... )
+    """
+    try:
+        distance_pct = abs(stop_loss - mark_price) / mark_price * 100
+
+        if distance_pct < min_distance_pct:
+            return False, (
+                f"Stop loss too close to mark price: {distance_pct:.3f}% "
+                f"(minimum: {min_distance_pct}%). "
+                f"SL={stop_loss:.4f}, Mark={mark_price:.4f}. "
+                f"This may trigger immediately due to market noise."
+            )
+
+        return True, ""
+
+    except Exception as e:
+        return False, f"Error validating SL distance: {str(e)}"
+
+
+def validate_risk_reward_ratio_for_manual_trading(
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    direction: str,
+    min_rr_ratio: float = 1.0
+) -> tuple:
+    """
+    Validate that Risk-Reward ratio meets minimum threshold.
+
+    RR Ratio = (TP Distance from Entry) / (SL Distance from Entry)
+
+    A minimum RR of 1.0 means the potential profit should be at least equal to
+    the potential loss. Higher values (e.g., 1.5 or 2.0) are more conservative.
+
+    Args:
+        entry_price: Position entry price
+        stop_loss: Stop loss price
+        take_profit: Take profit price
+        direction: Position direction ("LONG" or "SHORT")
+        min_rr_ratio: Minimum acceptable RR ratio (default: 1.0)
+
+    Returns:
+        Tuple of (is_valid: bool, error_message: str)
+
+    Example:
+        >>> is_valid, error = validate_risk_reward_ratio_for_manual_trading(
+        ...     45000.0, 44000.0, 47000.0, "LONG", min_rr_ratio=1.5
+        ... )
+    """
+    try:
+        # Calculate distances
+        if direction.upper() == "LONG":
+            risk = abs(entry_price - stop_loss)
+            reward = abs(take_profit - entry_price)
+        else:  # SHORT
+            risk = abs(stop_loss - entry_price)
+            reward = abs(entry_price - take_profit)
+
+        if risk == 0:
+            return False, "Risk cannot be zero (SL equals entry price)"
+
+        rr_ratio = reward / risk
+
+        if rr_ratio < min_rr_ratio:
+            return False, (
+                f"Risk-Reward ratio {rr_ratio:.2f} is below minimum {min_rr_ratio:.2f}. "
+                f"Entry={entry_price:.4f}, SL={stop_loss:.4f}, TP={take_profit:.4f}. "
+                f"Consider adjusting TP higher or SL closer to entry."
+            )
+
+        return True, ""
+
+    except Exception as e:
+        return False, f"Error validating Risk-Reward ratio: {str(e)}"

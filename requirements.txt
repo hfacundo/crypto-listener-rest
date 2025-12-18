@@ -11,4 +11,21 @@ psycopg2-binary>=2.9,<3.0
 requests>=2.0
 redis
 
+# ========== NEW DEPENDENCIES FOR IMPROVED ENDPOINTS ==========
+
+# Resilience and retry logic
+tenacity==8.2.3          # Automatic retries with exponential backoff
+circuitbreaker==1.4.0    # Circuit breaker pattern for Binance API
+
+# Observability and monitoring
+prometheus-client==0.19.0  # Prometheus metrics export
+
+# Testing
+pytest==7.4.3            # Testing framework
+pytest-asyncio==0.21.1   # Async test support
+pytest-mock==3.12.0      # Mocking utilities
+pytest-cov==4.1.0        # Test coverage reporting
+
+# ========================================================
+
 # Note: logging and RotatingFileHandler are part of Python stdlib (no install needed)
