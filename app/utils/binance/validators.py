@@ -625,6 +625,7 @@ def create_market_order(symbol: str, direction: str, quantity: float, retries: i
 def create_stop_loss_order(symbol: str, direction: str, stop_price: float, client, user_id: str, working_type: str = "CONTRACT_PRICE") -> dict:
     """
     Crea una orden STOP_MARKET en Binance Futures para cortar pérdidas (Stop Loss).
+    Usa el nuevo Algo Order API endpoint (migrado desde 2025-12-09).
 
     Args:
         symbol (str): Ej. "BTCUSDT"
@@ -643,24 +644,31 @@ def create_stop_loss_order(symbol: str, direction: str, stop_price: float, clien
         - MARK_PRICE: Más estable, evita wicks pero puede retrasarse en crashes
     """
     try:
-        result = client.futures_create_order(
-            symbol=symbol,
-            side=direction,
-            type="STOP_MARKET",
-            stopPrice=stop_price,
-            closePosition=True,  # ✅ cerrar toda la posición automáticamente
-            workingType=working_type,  # CONTRACT_PRICE (last price) o MARK_PRICE
-            newOrderRespType="RESULT"
-        )
-        print(f"✅ Orden STOP_MARKET ({working_type}) creada: {direction} {symbol} ({user_id}) @ {stop_price}")
+        # ✅ NUEVO: Usar el Algo Order API endpoint (POST /fapi/v1/algoOrder)
+        # Binance migró órdenes condicionales desde 2025-12-09
+        params = {
+            "symbol": symbol,
+            "side": direction,
+            "type": "STOP_MARKET",
+            "stopPrice": stop_price,
+            "closePosition": "true",  # Nota: debe ser string "true" para Algo API
+            "workingType": working_type,
+            "reduceOnly": "true"  # Añadido para asegurar que solo cierra posición existente
+        }
+
+        # Hacer llamada directa al endpoint de Algo Orders
+        result = client._request_futures_api('post', 'algoOrder', signed=True, data=params)
+        print(f"✅ Orden STOP_MARKET ({working_type}) creada via Algo API: {direction} {symbol} ({user_id}) @ {stop_price}")
         return result
     except Exception as e:
         print(f"❌ Error al crear STOP_MARKET para {symbol} ({user_id}): {e}")
+        traceback.print_exc()
         return None
 
 def create_take_profit_order(symbol: str, direction: str, stop_price: float, client, user_id: str):
     """
     Crea una orden TAKE_PROFIT_MARKET en Binance Futures.
+    Usa el nuevo Algo Order API endpoint (migrado desde 2025-12-09).
 
     Args:
         symbol (str): Ej. "BTCUSDT"
@@ -673,19 +681,25 @@ def create_take_profit_order(symbol: str, direction: str, stop_price: float, cli
     """
 
     try:
-        response = client.futures_create_order(
-            symbol=symbol,
-            side=direction,
-            type="TAKE_PROFIT_MARKET",
-            stopPrice=round(stop_price, 4),
-            closePosition=True,  # ✅ NUEVO
-            workingType="MARK_PRICE",  # ✅ NUEVO
-            newOrderRespType="RESULT"  # ✅ NUEVO
-        )
-        print(f"✅ Orden TAKE_PROFIT_MARKET ({user_id}) (closePosition=True) creada: {direction} {symbol} @ {stop_price}")
+        # ✅ NUEVO: Usar el Algo Order API endpoint (POST /fapi/v1/algoOrder)
+        # Binance migró órdenes condicionales desde 2025-12-09
+        params = {
+            "symbol": symbol,
+            "side": direction,
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": round(stop_price, 4),
+            "closePosition": "true",  # Nota: debe ser string "true" para Algo API
+            "workingType": "MARK_PRICE",
+            "reduceOnly": "true"  # Añadido para asegurar que solo cierra posición existente
+        }
+
+        # Hacer llamada directa al endpoint de Algo Orders
+        response = client._request_futures_api('post', 'algoOrder', signed=True, data=params)
+        print(f"✅ Orden TAKE_PROFIT_MARKET ({user_id}) (closePosition=True) creada via Algo API: {direction} {symbol} @ {stop_price}")
         return response
     except Exception as e:
         print(f"❌ Error al crear orden TAKE_PROFIT para {symbol} ({user_id}): {e}")
+        traceback.print_exc()
         return None
 
 def create_safe_trade_with_sl_tp(
@@ -778,8 +792,9 @@ def create_safe_trade_with_sl_tp(
                 "entry_order_id": order_id
             }
 
-        sl_order_id = sl_result.get("orderId") if sl_result else None
-        tp_order_id = tp_result.get("orderId") if tp_result else None
+        # ✅ NUEVO: Manejar respuesta del Algo Order API (usa 'algoId' en lugar de 'orderId')
+        sl_order_id = sl_result.get("algoId") or sl_result.get("orderId") if sl_result else None
+        tp_order_id = tp_result.get("algoId") or tp_result.get("orderId") if tp_result else None
         print("✅ Operación completada con SL y TP creados.")
         return {
             "success": True,
@@ -820,6 +835,7 @@ def cancel_orphan_orders(symbol: str, client, user_id: str):
 def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
     """
     Si no hay posición abierta en Binance, cancela órdenes SL/TP huérfanas.
+    Maneja tanto órdenes tradicionales como Algo Orders (migradas desde 2025-12-09).
 
     Args:
         symbol (str): Ejemplo "BTCUSDT"
@@ -831,17 +847,34 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
         if not positions or float(positions[0]["positionAmt"]) == 0.0:
             print(f"🔍 Sin posición activa para {symbol}, revisando órdenes abiertas...")
 
+            # 1️⃣ Obtener órdenes tradicionales (endpoint antiguo)
             open_orders = client.futures_get_open_orders(symbol=symbol)
 
-            if not open_orders:
+            # 2️⃣ Obtener Algo Orders (nuevo endpoint desde 2025-12-09)
+            algo_orders = []
+            try:
+                algo_response = client._request_futures_api('get', 'algoOpenOrders', signed=True, data={"symbol": symbol})
+                # La respuesta puede tener formato: {"openOrders": [...]} o ser lista directa
+                if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                    algo_orders = algo_response["openOrders"]
+                elif isinstance(algo_response, list):
+                    algo_orders = algo_response
+            except Exception as e:
+                print(f"⚠️ No se pudieron obtener Algo Orders para {symbol}: {e}")
+
+            # Combinar ambas listas
+            total_orders = len(open_orders) + len(algo_orders)
+
+            if total_orders == 0:
                 print(f"❔ No hay órdenes abiertas para {symbol}, posible cierre manual.")
                 # Confirmamos que había order_id en BD antes de esta llamada
                 update_trade_status(symbol, user_id, status="close_manual")
                 return
-            
+
+            # 3️⃣ Cancelar órdenes tradicionales
             for order in open_orders:
                 if order["type"] in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]:
-                    print(f"🧹 Cancelando orden huérfana {order['type']} (ID: {order['orderId']}) de {user_id}")
+                    print(f"🧹 Cancelando orden huérfana tradicional {order['type']} (ID: {order['orderId']}) de {user_id}")
                     client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
 
                     # Actualizar status del trade
@@ -849,8 +882,28 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
                         update_trade_status(symbol, user_id, status="success")
                     elif order["type"] == "TAKE_PROFIT_MARKET":
                         update_trade_status(symbol, user_id, status="fail")
+
+            # 4️⃣ Cancelar Algo Orders
+            for algo_order in algo_orders:
+                order_type = algo_order.get("algoType") or algo_order.get("type", "UNKNOWN")
+                algo_id = algo_order.get("algoId")
+
+                if algo_id and order_type in ["STOP_MARKET", "TAKE_PROFIT_MARKET", "STOP", "TAKE_PROFIT"]:
+                    print(f"🧹 Cancelando Algo Order huérfana {order_type} (algoId: {algo_id}) de {user_id}")
+                    try:
+                        client._request_futures_api('delete', 'algoOrder', signed=True, data={"symbol": symbol, "algoId": algo_id})
+
+                        # Actualizar status del trade
+                        if order_type in ["STOP_MARKET", "STOP"]:
+                            update_trade_status(symbol, user_id, status="success")
+                        elif order_type in ["TAKE_PROFIT_MARKET", "TAKE_PROFIT"]:
+                            update_trade_status(symbol, user_id, status="fail")
+                    except Exception as e:
+                        print(f"⚠️ Error cancelando Algo Order {algo_id}: {e}")
+
         else:
             print(f"✅ Posición activa detectada para {symbol} ({user_id}), no se cancelan órdenes.")
 
     except Exception as e:
         print(f"❌ Error al cancelar órdenes huérfanas para {symbol} ({user_id}): {e}")
+        traceback.print_exc()

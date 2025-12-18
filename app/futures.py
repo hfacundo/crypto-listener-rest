@@ -473,17 +473,39 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
 
         new_stop_f = float(ns)
 
-        # 2) Encontrar STOP_MARKET actual
+        # 2) Encontrar STOP_MARKET actual (tanto en órdenes tradicionales como Algo Orders)
         open_orders = client.futures_get_open_orders(symbol=symbol)
         current_stop = None
-        stop_orders = []
+        stop_orders = []  # Lista de tuplas: (order_dict, is_algo_order)
+
+        # 2a) Buscar en órdenes tradicionales
         for o in open_orders:
             if o.get("type") == "STOP_MARKET":
-                stop_orders.append(o)
+                stop_orders.append((o, False))  # False = no es Algo Order
                 try:
                     current_stop = float(o.get("stopPrice"))
                 except Exception:
                     pass
+
+        # 2b) Buscar en Algo Orders (nuevo endpoint desde 2025-12-09)
+        try:
+            algo_response = client._request_futures_api('get', 'algoOpenOrders', signed=True, data={"symbol": symbol})
+            algo_orders = []
+            if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                algo_orders = algo_response["openOrders"]
+            elif isinstance(algo_response, list):
+                algo_orders = algo_response
+
+            for algo_order in algo_orders:
+                order_type = algo_order.get("algoType") or algo_order.get("type", "")
+                if order_type in ["STOP_MARKET", "STOP"]:
+                    stop_orders.append((algo_order, True))  # True = es Algo Order
+                    try:
+                        current_stop = float(algo_order.get("stopPrice", 0))
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"⚠️ Could not fetch Algo Orders for {symbol}: {e}")
 
         if current_stop is None:
             # No hay SL existente -> permitir crear uno directamente (pero aún validar sanity)
@@ -507,11 +529,23 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
             return {"success": False, "error": "Invalid SL for SHORT (expected new_stop > mark)"}
 
         # 5) Cancelar SOLO los STOP_MARKET actuales (dejar TP intacto)
-        for o in stop_orders:
+        # stop_orders contiene tuplas: (order_dict, is_algo_order)
+        for order_tuple in stop_orders:
+            order, is_algo = order_tuple
             try:
-                client.futures_cancel_order(symbol=symbol, orderId=o["orderId"])
+                if is_algo:
+                    # Cancelar Algo Order
+                    algo_id = order.get("algoId")
+                    if algo_id:
+                        client._request_futures_api('delete', 'algoOrder', signed=True, data={"symbol": symbol, "algoId": algo_id})
+                        print(f"✅ Cancelled Algo STOP_MARKET (algoId: {algo_id})")
+                else:
+                    # Cancelar orden tradicional
+                    client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
+                    print(f"✅ Cancelled traditional STOP_MARKET (orderId: {order['orderId']})")
             except Exception as e:
-                print(f"⚠️ Could not cancel STOP_MARKET {o.get('orderId')}: {e}")
+                order_id = order.get("algoId") if is_algo else order.get("orderId")
+                print(f"⚠️ Could not cancel STOP_MARKET {order_id}: {e}")
 
         # 6) Crear nuevo STOP_MARKET (closePosition=True)
         sl_res = create_stop_loss_order(symbol, exit_side, new_stop_f, client, user_id)
