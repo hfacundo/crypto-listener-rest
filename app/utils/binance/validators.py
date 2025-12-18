@@ -649,11 +649,11 @@ def create_stop_loss_order(symbol: str, direction: str, stop_price: float, clien
         params = {
             "symbol": symbol,
             "side": direction,
-            "type": "STOP_MARKET",
+            "algoType": "STOP_MARKET",  # ✅ CORREGIDO: usar 'algoType' en lugar de 'type'
             "stopPrice": stop_price,
-            "closePosition": "true",  # Nota: debe ser string "true" para Algo API
-            "workingType": working_type,
-            "reduceOnly": "true"  # Añadido para asegurar que solo cierra posición existente
+            "closePosition": "true",  # Cierra toda la posición automáticamente
+            "workingType": working_type
+            # NOTA: No usar 'reduceOnly' cuando 'closePosition' está activado
         }
 
         # Hacer llamada directa al endpoint de Algo Orders
@@ -686,11 +686,11 @@ def create_take_profit_order(symbol: str, direction: str, stop_price: float, cli
         params = {
             "symbol": symbol,
             "side": direction,
-            "type": "TAKE_PROFIT_MARKET",
+            "algoType": "TAKE_PROFIT_MARKET",  # ✅ CORREGIDO: usar 'algoType' en lugar de 'type'
             "stopPrice": round(stop_price, 4),
-            "closePosition": "true",  # Nota: debe ser string "true" para Algo API
-            "workingType": "MARK_PRICE",
-            "reduceOnly": "true"  # Añadido para asegurar que solo cierra posición existente
+            "closePosition": "true",  # Cierra toda la posición automáticamente
+            "workingType": "MARK_PRICE"
+            # NOTA: No usar 'reduceOnly' cuando 'closePosition' está activado
         }
 
         # Hacer llamada directa al endpoint de Algo Orders
