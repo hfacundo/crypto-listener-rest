@@ -853,7 +853,8 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
             # 2️⃣ Obtener Algo Orders (nuevo endpoint desde 2025-12-09)
             algo_orders = []
             try:
-                algo_response = client._request_futures_api('get', 'algoOpenOrders', signed=True, data={"symbol": symbol})
+                # ✅ CORREGIDO: usar 'openAlgoOrders' (con O mayúscula)
+                algo_response = client._request_futures_api('get', 'openAlgoOrders', signed=True, data={"symbol": symbol})
                 # La respuesta puede tener formato: {"openOrders": [...]} o ser lista directa
                 if isinstance(algo_response, dict) and "openOrders" in algo_response:
                     algo_orders = algo_response["openOrders"]

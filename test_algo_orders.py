@@ -163,9 +163,10 @@ def test_algo_orders(symbol="BTCUSDT", user_id="futures"):
         # 9. Verificar órdenes creadas
         print("9️⃣  Verificando Algo Orders activas...")
         try:
+            # ✅ CORREGIDO: usar 'openAlgoOrders' (con O mayúscula)
             algo_orders = client._request_futures_api(
                 'get',
-                'algoOpenOrders',
+                'openAlgoOrders',
                 signed=True,
                 data={"symbol": symbol}
             )

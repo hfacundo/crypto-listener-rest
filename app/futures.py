@@ -489,7 +489,8 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
 
         # 2b) Buscar en Algo Orders (nuevo endpoint desde 2025-12-09)
         try:
-            algo_response = client._request_futures_api('get', 'algoOpenOrders', signed=True, data={"symbol": symbol})
+            # ✅ CORREGIDO: usar 'openAlgoOrders' (con O mayúscula)
+            algo_response = client._request_futures_api('get', 'openAlgoOrders', signed=True, data={"symbol": symbol})
             algo_orders = []
             if isinstance(algo_response, dict) and "openOrders" in algo_response:
                 algo_orders = algo_response["openOrders"]
