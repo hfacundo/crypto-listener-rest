@@ -649,10 +649,12 @@ def create_stop_loss_order(symbol: str, direction: str, stop_price: float, clien
         params = {
             "symbol": symbol,
             "side": direction,
-            "algoType": "STOP_MARKET",  # ✅ CORREGIDO: usar 'algoType' en lugar de 'type'
-            "stopPrice": stop_price,
-            "closePosition": "true",  # Cierra toda la posición automáticamente
-            "workingType": working_type
+            "algoType": "CONDITIONAL",  # ✅ Tipo de algoritmo debe ser CONDITIONAL
+            "type": "STOP_MARKET",      # ✅ Tipo específico de orden condicional
+            "triggerPrice": stop_price,  # ✅ Precio de activación (antes stopPrice)
+            "closePosition": "true",    # Cierra toda la posición automáticamente
+            "workingType": working_type,
+            "timestamp": int(time.time() * 1000)  # ✅ Timestamp requerido
             # NOTA: No usar 'reduceOnly' cuando 'closePosition' está activado
         }
 
@@ -686,10 +688,12 @@ def create_take_profit_order(symbol: str, direction: str, stop_price: float, cli
         params = {
             "symbol": symbol,
             "side": direction,
-            "algoType": "TAKE_PROFIT_MARKET",  # ✅ CORREGIDO: usar 'algoType' en lugar de 'type'
-            "stopPrice": round(stop_price, 4),
-            "closePosition": "true",  # Cierra toda la posición automáticamente
-            "workingType": "MARK_PRICE"
+            "algoType": "CONDITIONAL",        # ✅ Tipo de algoritmo debe ser CONDITIONAL
+            "type": "TAKE_PROFIT_MARKET",     # ✅ Tipo específico de orden condicional
+            "triggerPrice": round(stop_price, 4),  # ✅ Precio de activación (antes stopPrice)
+            "closePosition": "true",          # Cierra toda la posición automáticamente
+            "workingType": "MARK_PRICE",
+            "timestamp": int(time.time() * 1000)  # ✅ Timestamp requerido
             # NOTA: No usar 'reduceOnly' cuando 'closePosition' está activado
         }
 
