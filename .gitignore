@@ -8,6 +8,7 @@ venv/
 env/
 ENV/
 .claude/settings.local.json
+*.json
 
 # IDE
 .vscode/
