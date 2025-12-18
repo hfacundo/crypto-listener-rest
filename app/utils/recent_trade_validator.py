@@ -295,9 +295,9 @@ class RecentTradeValidator:
                 else:
                     logger.info(f"   ℹ️ No orphans detected: {action}")
 
-            except Exception as e:
-                logger.error(f"❌ Error checking orphan orders: {e}")
-                # Si falla detección, continuar con lógica por defecto
+        except Exception as e:
+            logger.error(f"❌ Error checking orphan orders: {e}")
+            # Si falla detección, continuar con lógica por defecto
 
         # No hay trade cerrado reciente ni orphan orders, verificar tiempo desde entry
         if hours_since_entry < 0.5:  # < 30 minutos
