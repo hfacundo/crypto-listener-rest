@@ -343,24 +343,29 @@ def adjust_prices_by_slippage(entry_price, stop_loss, target_price, symbol, filt
         tuple: Nuevos (entry_price, stop_loss, target_price)
     """
     try:
-
         tick_size = float(filters["PRICE_FILTER"]["tickSize"])
+
+        # ✅ FIX: Convertir todos los precios a float para evitar TypeError con Decimal
+        entry_price = float(entry_price)
+        stop_loss = float(stop_loss)
+        target_price = float(target_price)
+        mark_price = float(mark_price)
 
         original_sl_distance = abs(entry_price - stop_loss)
         original_tp_distance = abs(target_price - entry_price)
 
         if entry_price > stop_loss:
             # LONG
-            new_sl = mark_price  - original_sl_distance
-            new_tp = mark_price  + original_tp_distance
+            new_sl = mark_price - original_sl_distance
+            new_tp = mark_price + original_tp_distance
             direction = "LONG"
         else:
             # SHORT
-            new_sl = mark_price  + original_sl_distance
-            new_tp = mark_price  - original_tp_distance
+            new_sl = mark_price + original_sl_distance
+            new_tp = mark_price - original_tp_distance
             direction = "SHORT"
 
-         # Ajustar todos los precios al tickSize permitido
+        # Ajustar todos los precios al tickSize permitido
         entry_adj = adjust_price_to_tick(mark_price, tick_size)
         sl_adj    = adjust_price_to_tick(new_sl, tick_size)
         tp_adj    = adjust_price_to_tick(new_tp, tick_size)

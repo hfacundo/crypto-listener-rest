@@ -261,6 +261,10 @@ def adjust_price_to_tick(price: float, tick_size: float) -> float:
     """
     Ajusta el precio al tickSize más cercano (redondeo hacia abajo para evitar errores).
     """
+    # ✅ FIX: Convertir explícitamente a float para evitar TypeError con Decimal
+    price = float(price)
+    tick_size = float(tick_size)
+
     precision = int(round(-math.log10(tick_size)))
     adjusted = math.floor(price / tick_size) * tick_size
     return round(adjusted, precision)
