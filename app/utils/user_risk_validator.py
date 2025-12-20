@@ -19,6 +19,7 @@ import json
 import logging
 import sys
 import os
+import psycopg2.extras
 from typing import Tuple, Dict, Optional, List
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -691,8 +692,8 @@ class UserRiskProfileValidator:
                 mark_price = float(pos.get("markPrice", entry_price))
                 unrealized_pnl = float(pos.get("unRealizedProfit", "0"))
 
-                # Obtener trade info desde Redis para calcular R
-                trade_info = self._get_trade_info_from_redis(symbol)
+                # Obtener trade info desde PostgreSQL para calcular R
+                trade_info = self._get_trade_info_from_db(symbol)
 
                 if not trade_info:
                     continue
@@ -731,26 +732,46 @@ class UserRiskProfileValidator:
             logger.error(f"❌ Error counting losing trades for {self.user_id}: {e}")
             return 0, []
 
-    def _get_trade_info_from_redis(self, symbol: str) -> Optional[Dict]:
-        """Obtiene información del trade desde Redis."""
-        if not self.redis_client:
+    def _get_trade_info_from_db(self, symbol: str) -> Optional[Dict]:
+        """
+        Obtiene información del trade activo desde PostgreSQL.
+
+        Returns:
+            Dict con trade info o None si no existe
+        """
+        if not self.trade_protection:
             return None
 
         try:
-            trade_key = f"guardian:trades:{symbol.lower()}"
-            trade_data = self.redis_client.get(trade_key)
+            query = """
+            SELECT
+                entry_price as entry,
+                stop_price as stop,
+                target_price as target,
+                direction as side,
+                EXTRACT(EPOCH FROM entry_time) as timestamp,
+                rr,
+                probability,
+                sqs
+            FROM trade_history
+            WHERE user_id = %s
+              AND symbol = %s
+              AND strategy = %s
+              AND exit_reason = 'active'
+            ORDER BY entry_time DESC
+            LIMIT 1
+            """
 
-            if not trade_data:
-                return None
+            conn = self.trade_protection._get_conn()
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(query, (self.user_id, symbol.upper(), self.strategy))
+                result = cur.fetchone()
+            conn.close()
 
-            trade_info = json.loads(
-                trade_data.decode() if isinstance(trade_data, bytes) else trade_data
-            )
-
-            return trade_info
+            return dict(result) if result else None
 
         except Exception as e:
-            logger.error(f"⚠️ Error getting trade info from Redis for {symbol}: {e}")
+            logger.error(f"⚠️ Error getting trade info from DB for {symbol}: {e}")
             return None
 
     # ═══════════════════════════════════════════════════════════════════

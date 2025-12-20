@@ -436,44 +436,7 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
 
                 if trade_id and trade_id != -1:
                     print(f"{log_prefix} Trade registered in PostgreSQL: trade_id={trade_id}")
-
-                    # Guardar trade_id en Redis
-                    try:
-                        from app.utils.db.redis_client import get_redis_client
-                        redis_client = get_redis_client()
-                        if redis_client:
-                            redis_key = f"trade_id:{user_id}:{symbol.upper()}"
-                            redis_client.setex(redis_key, 7*24*3600, str(trade_id))
-                            print(f"{log_prefix} Trade ID saved to Redis: {redis_key} = {trade_id}")
-
-                            # DUAL WRITE: Guardian trade data
-                            guardian_trade_data = {
-                                "symbol": symbol.upper(),
-                                "side": direction.upper(),
-                                "direction": direction.upper(),  # Para light_check.py (compatibilidad)
-                                "entry": entry_price,
-                                "stop": stop_loss,           # Para trailing_stop.py y guardian_service.py
-                                "stop_loss": stop_loss,      # Para light_check.py y decisions.py (compatibilidad)
-                                "original_stop": stop_loss,  # CRÍTICO: Preservar stop original para cálculo correcto de R
-                                "target": target_price,
-                                "user_id": user_id,
-                                "strategy": strategy,
-                                "timestamp": time.time(),
-                                "rr": rr,
-                                "probability": probability,
-                                "sqs": signal_quality_score,
-                                "trade_id": trade_id
-                            }
-                            guardian_key = f"guardian:trades:{user_id}:{symbol.upper()}"
-                            redis_client.setex(
-                                guardian_key,
-                                7 * 24 * 3600,
-                                json.dumps(guardian_trade_data)
-                            )
-                            print(f"{log_prefix} Guardian trade saved to Redis: {guardian_key}")
-
-                    except Exception as e:
-                        print(f"{log_prefix} Error saving to Redis: {e}")
+                    # ✅ PostgreSQL is the single source of truth - No Redis writes
 
             except Exception as e:
                 print(f"{log_prefix} Error registering trade in PostgreSQL: {e}")

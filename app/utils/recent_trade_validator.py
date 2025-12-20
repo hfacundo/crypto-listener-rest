@@ -101,10 +101,10 @@ class RecentTradeValidator:
         symbol_lower = symbol.lower()
 
         # ===================================================================
-        # PASO 1: Verificar si existe trade ACTIVO en Redis
+        # PASO 1: Verificar si existe trade ACTIVO en PostgreSQL
         # ===================================================================
-        if self._trade_exists_in_redis(user_id, symbol_lower):
-            return False, f"Trade already active for {symbol} (found in Redis)"
+        if self._trade_exists_in_db(user_id, symbol_lower, strategy):
+            return False, f"Trade already active for {symbol} (found in DB)"
 
         # ===================================================================
         # PASO 2: Consultar último trade de BD
@@ -315,39 +315,49 @@ class RecentTradeValidator:
             # (crypto-guardian-cleanup debería haberlo procesado)
             logger.error(
                 f"   🚨 POTENTIAL BUG: Trade marked 'active' in DB for {hours_since_entry:.1f}h "
-                f"but NOT in Redis and NO orphan orders found. "
+                f"but NO orphan orders found. "
                 f"This suggests crypto-guardian failed to update DB. "
                 f"ALLOWING TRADE (may bypass cooldown if trade actually lost)."
             )
             return True, "OK (old active trade, likely closed)"
 
-    def _trade_exists_in_redis(self, user_id: str, symbol: str) -> bool:
+    def _trade_exists_in_db(self, user_id: str, symbol: str, strategy: str) -> bool:
         """
-        Verifica si existe un trade activo en Redis.
+        Verifica si existe un trade activo en PostgreSQL.
 
         Args:
             user_id: ID del usuario
             symbol: Símbolo del trade (lowercase)
+            strategy: Estrategia (ej: "archer_model")
 
         Returns:
-            True si existe trade activo
+            True si existe trade con exit_reason='active'
         """
         try:
-            # Probar diferentes formatos de key
-            possible_keys = [
-                f"guardian:trades:{user_id}:{symbol}",
-                f"guardian:trades:{symbol}",
-                f"trade:{user_id}:{symbol}"
-            ]
+            if not self.trade_protection:
+                logger.warning(f"TradeProtectionSystem not available")
+                return False
 
-            for key in possible_keys:
-                if self.redis_client.exists(key):
-                    return True
+            query = """
+            SELECT id
+            FROM trade_history
+            WHERE user_id = %s
+              AND symbol = %s
+              AND strategy = %s
+              AND exit_reason = 'active'
+            LIMIT 1
+            """
 
-            return False
+            conn = self.trade_protection._get_conn()
+            with conn.cursor() as cur:
+                cur.execute(query, (user_id, symbol, strategy))
+                result = cur.fetchone()
+            conn.close()
+
+            return result is not None
 
         except Exception as e:
-            logger.error(f"❌ Error checking Redis for {user_id}/{symbol}: {e}")
+            logger.error(f"❌ Error checking active trade in DB for {user_id}/{symbol}: {e}")
             # En caso de error, retornar False (fail-safe: permitir trade)
             return False
 

@@ -257,7 +257,7 @@ def _get_position_amt(symbol: str, client) -> float:
 def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_price: float, exit_reason: str, pnl: float, client) -> bool:
     """
     Actualiza el trade en PostgreSQL cuando se cierra una posición.
-    Obtiene el trade_id de Redis y actualiza el resultado en PostgreSQL.
+    Obtiene el trade_id de PostgreSQL directamente (no Redis).
 
     Args:
         symbol: El símbolo del trade (ej: BTCUSDT)
@@ -271,27 +271,38 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
     Returns:
         bool: True si se actualizó exitosamente, False si no
     """
-    if not TradeProtectionSystem or not get_redis_client:
+    if not TradeProtectionSystem:
         return False
 
     try:
-        redis_client = get_redis_client()
-        if not redis_client:
-            return False
-
-        # Obtener trade_id de Redis
-        trade_key = f"trade_id:{user_id}:{symbol.upper()}"
-        trade_id = redis_client.get(trade_key)
-
-        if not trade_id:
-            print(f"⚠️ No trade_id found in Redis for {symbol} ({user_id})")
-            return False
-
-        trade_id = trade_id.decode('utf-8') if isinstance(trade_id, bytes) else trade_id
-
-        # Actualizar en PostgreSQL (PNL ya calculado ANTES de cerrar)
         protection_system = TradeProtectionSystem()
 
+        # Obtener trade_id desde PostgreSQL (no Redis)
+        query = """
+        SELECT id
+        FROM trade_history
+        WHERE user_id = %s
+          AND symbol = %s
+          AND strategy = %s
+          AND exit_reason = 'active'
+        ORDER BY entry_time DESC
+        LIMIT 1
+        """
+
+        conn = protection_system._get_conn()
+        with conn.cursor() as cur:
+            cur.execute(query, (user_id, symbol.upper(), strategy))
+            result = cur.fetchone()
+
+        if not result:
+            print(f"⚠️ No active trade found in DB for {symbol} ({user_id})")
+            conn.close()
+            return False
+
+        trade_id = result[0]
+        conn.close()
+
+        # Actualizar en PostgreSQL (PNL ya calculado ANTES de cerrar)
         success = protection_system.update_trade_exit(
             user_id=user_id,
             strategy=strategy,
@@ -303,8 +314,6 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
 
         if success:
             print(f"📝 Trade {trade_id} updated in PostgreSQL: exit={exit_price:.2f}, reason={exit_reason}, pnl={pnl:.2f}")
-            # Limpiar Redis
-            redis_client.delete(trade_key)
 
         return success
 
@@ -365,16 +374,6 @@ def close_position_and_cancel_orders(symbol: str, client, user_id: str, strategy
 
         # Best-effort cleanup of any resting conditional orders
         cancel_orphan_orders(symbol, client, user_id)
-
-        # DUAL WRITE CLEANUP: Eliminar guardian trade de Redis
-        try:
-            redis_client = get_redis_client()
-            if redis_client:
-                guardian_key = f"guardian:trades:{user_id}:{symbol.upper()}"
-                redis_client.delete(guardian_key)
-                print(f"🧹 Guardian trade removed from Redis: {guardian_key}")
-        except Exception as e:
-            print(f"⚠️ Error removing guardian trade from Redis: {e}")
 
         return {"success": True, "order_id": resp.get("orderId")}
     except Exception as e:
@@ -635,103 +634,13 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
         except Exception as e:
             print(f"⚠️ Could not verify SL order creation: {e}")
 
-        # 7) Actualizar Redis para que crypto-guardian use el valor actualizado
-        import json
-        import time
-
-        # Extraer metadata del nivel (si disponible)
-        level_name = "manual_adjust"
-        if level_metadata:
-            level_name = level_metadata.get("level_name", "manual_adjust")
-            previous_level = level_metadata.get("previous_level")
-        else:
-            previous_level = None
-
-        redis_updated = False
-        redis_client = None
-
-        try:
-            redis_client = get_redis_client()
-            if redis_client:
-                guardian_key = f"guardian:trades:{user_id}:{symbol.upper()}"
-                trade_data = redis_client.get(guardian_key)
-
-                if trade_data:
-                    trade_dict = json.loads(trade_data)
-
-                    # Guardar previous_level antes de actualizar
-                    previous_level_from_redis = trade_dict.get('ts_level_applied')
-
-                    # CRÍTICO: Preservar original_stop si ya existe, o guardarlo ahora
-                    if 'original_stop' not in trade_dict:
-                        # Primera vez: guardar el stop actual como original
-                        trade_dict['original_stop'] = current_stop if current_stop else new_stop_f
-
-                    # Actualizar campos básicos (NUNCA modificar original_stop)
-                    trade_dict['stop'] = new_stop_f
-                    trade_dict['stop_loss'] = new_stop_f  # Compatibilidad con light_check.py y decisions.py
-
-                    # Actualizar campos de tracking multinivel
-                    trade_dict['ts_level_applied'] = level_name
-                    trade_dict['ts_last_adjustment_ts'] = time.time()
-                    trade_dict['ts_last_adjustment_stop'] = new_stop_f
-                    trade_dict['ts_previous_stop'] = current_stop if current_stop else new_stop_f
-                    trade_dict['ts_previous_level'] = previous_level or previous_level_from_redis
-
-                    # Intentar guardar en Redis
-                    redis_client.setex(guardian_key, 7*24*3600, json.dumps(trade_dict))
-                    redis_updated = True
-                    print(f"✅ Updated guardian trade stop in Redis: {guardian_key} -> {new_stop_f} (level: {level_name})")
-                else:
-                    print(f"⚠️ Guardian trade not found in Redis: {guardian_key}")
-
-        except Exception as e:
-            # Intentar retry una vez
-            print(f"⚠️ Could not update guardian trade in Redis (first attempt): {e}")
-
-            try:
-                if redis_client:
-                    time.sleep(0.5)  # Esperar 500ms
-                    redis_client = get_redis_client()  # Obtener nuevo cliente
-
-                    if redis_client:
-                        guardian_key = f"guardian:trades:{user_id}:{symbol.upper()}"
-                        trade_data = redis_client.get(guardian_key)
-
-                        if trade_data:
-                            trade_dict = json.loads(trade_data)
-
-                            # CRÍTICO: Preservar original_stop si ya existe
-                            if 'original_stop' not in trade_dict:
-                                trade_dict['original_stop'] = current_stop if current_stop else new_stop_f
-
-                            # Actualizar todos los campos (NUNCA modificar original_stop)
-                            trade_dict['stop'] = new_stop_f
-                            trade_dict['stop_loss'] = new_stop_f
-                            trade_dict['ts_level_applied'] = level_name
-                            trade_dict['ts_last_adjustment_ts'] = time.time()
-                            trade_dict['ts_last_adjustment_stop'] = new_stop_f
-                            trade_dict['ts_previous_stop'] = current_stop if current_stop else new_stop_f
-                            trade_dict['ts_previous_level'] = previous_level
-
-                            redis_client.setex(guardian_key, 7*24*3600, json.dumps(trade_dict))
-                            redis_updated = True
-                            print(f"✅ Redis update succeeded on retry: {guardian_key} -> {new_stop_f}")
-            except Exception as retry_error:
-                print(f"❌ CRITICAL: Redis update failed on retry: {retry_error}")
-                print(f"   Binance updated successfully but Redis sync failed")
-                print(f"   Manual verification recommended for {user_id}/{symbol}")
-
-        # Retornar respuesta enriquecida
+        # ✅ Stop loss updated in Binance - PostgreSQL remains single source of truth
         return {
             "success": True,
             "direction": direction,
             "stop": new_stop_f,
-            "level_applied": level_name,
             "previous_stop": current_stop,
-            "adjustment_confirmed": True,
-            "redis_updated": redis_updated,
-            "timestamp": time.time()
+            "adjustment_confirmed": True
         }
 
     except Exception as e:
