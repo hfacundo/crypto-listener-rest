@@ -99,21 +99,19 @@ class RecentTradeValidator:
         Returns:
             Tuple[bool, str]: (can_trade, rejection_reason)
         """
-        symbol_lower = symbol.lower()
-
         # ===================================================================
         # PASO 1: Verificar si existe trade ACTIVO en PostgreSQL
         # ===================================================================
-        if self._trade_exists_in_db(user_id, symbol_lower, strategy):
+        if self._trade_exists_in_db(user_id, symbol, strategy):
             return False, f"Trade already active for {symbol} (found in DB)"
 
         # ===================================================================
         # PASO 2: Consultar último trade de BD
         # ===================================================================
-        last_trade = self._get_last_trade_from_db(user_id, strategy, symbol_lower)
+        last_trade = self._get_last_trade_from_db(user_id, strategy, symbol)
 
         # 🔍 LOG CRÍTICO DE DEBUG
-        logger.info(f"🔍 COOLDOWN DEBUG [{user_id}/{symbol_lower}]:")
+        logger.info(f"🔍 COOLDOWN DEBUG [{user_id}/{symbol}]:")
         logger.info(f"   last_trade from DB: {last_trade}")
         logger.info(f"   cooldown_hours config: {cooldown_hours}h")
 
@@ -232,7 +230,7 @@ class RecentTradeValidator:
             f"Searching for recent closed trades..."
         )
 
-        recent_closed_trade = self._get_recent_closed_trade(user_id, strategy, symbol_lower, minutes=30)
+        recent_closed_trade = self._get_recent_closed_trade(user_id, strategy, symbol, minutes=30)
 
         if recent_closed_trade:
             # Hay un trade cerrado recientemente, verificar si ganó o perdió
@@ -301,7 +299,7 @@ class RecentTradeValidator:
                 has_orphans, action, updated_trade_info = orphan_detector.check_and_handle_orphan_orders(
                     user_id=user_id,
                     strategy=strategy,
-                    symbol=symbol_lower,
+                    symbol=symbol,
                     last_trade_from_db=last_trade,
                     protection_system=protection_system
                 )
@@ -378,11 +376,11 @@ class RecentTradeValidator:
 
     def _trade_exists_in_db(self, user_id: str, symbol: str, strategy: str) -> bool:
         """
-        Verifica si existe un trade activo en PostgreSQL.
+        Verifica si existe un trade activo en PostgreSQL (case-insensitive).
 
         Args:
             user_id: ID del usuario
-            symbol: Símbolo del trade (lowercase)
+            symbol: Símbolo del trade (cualquier case)
             strategy: Estrategia (ej: "archer_model")
 
         Returns:
@@ -393,7 +391,7 @@ class RecentTradeValidator:
             SELECT id
             FROM trade_history
             WHERE user_id = %s
-              AND symbol = %s
+              AND LOWER(symbol) = LOWER(%s)
               AND strategy = %s
               AND exit_reason = 'active'
             LIMIT 1
@@ -419,12 +417,12 @@ class RecentTradeValidator:
         symbol: str
     ) -> Optional[Dict]:
         """
-        Obtiene el último trade del símbolo desde BD.
+        Obtiene el último trade del símbolo desde BD (case-insensitive).
 
         Args:
             user_id: ID del usuario
             strategy: Estrategia
-            symbol: Símbolo del trade (lowercase)
+            symbol: Símbolo del trade (cualquier case)
 
         Returns:
             Dict con campos del trade o None si no existe
@@ -442,7 +440,7 @@ class RecentTradeValidator:
         FROM trade_history
         WHERE user_id = %s
           AND strategy = %s
-          AND symbol = %s
+          AND LOWER(symbol) = LOWER(%s)
         ORDER BY entry_time DESC
         LIMIT 1
         """
@@ -475,7 +473,7 @@ class RecentTradeValidator:
         minutes: int = 30
     ) -> Optional[Dict]:
         """
-        Busca trades cerrados recientemente (últimos N minutos).
+        Busca trades cerrados recientemente (últimos N minutos) (case-insensitive).
 
         Esto es útil para detectar race conditions donde:
         - crypto-guardian ya eliminó el trade de Redis
@@ -485,7 +483,7 @@ class RecentTradeValidator:
         Args:
             user_id: ID del usuario
             strategy: Estrategia
-            symbol: Símbolo del trade (lowercase)
+            symbol: Símbolo del trade (cualquier case)
             minutes: Ventana de tiempo para buscar (default: 30 min)
 
         Returns:
@@ -504,7 +502,7 @@ class RecentTradeValidator:
         FROM trade_history
         WHERE user_id = %s
           AND strategy = %s
-          AND symbol = %s
+          AND LOWER(symbol) = LOWER(%s)
           AND exit_time IS NOT NULL
           AND exit_time >= NOW() - INTERVAL '%s minutes'
         ORDER BY exit_time DESC

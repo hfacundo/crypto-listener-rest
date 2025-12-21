@@ -297,7 +297,7 @@ class TradeProtectionSystem:
         Args:
             user_id: ID del usuario (ej: "hufsa", "copy_trading")
             strategy: Nombre de la estrategia (ej: "archer_dual")
-            symbol: Símbolo del trade (ej: "BTCUSDT")
+            symbol: Símbolo del trade (ej: "BTCUSDT") - se normalizará a mayúsculas
             direction: Dirección (ej: "BUY", "SELL")
             entry_time: Timestamp de entrada
             entry_price: Precio de entrada
@@ -313,6 +313,9 @@ class TradeProtectionSystem:
         Returns:
             int: trade_id para posterior actualización
         """
+        # Normalizar symbol a MAYÚSCULAS para consistencia en BD
+        symbol = symbol.upper()
+
         query = """
         INSERT INTO trade_history (
             user_id, strategy, symbol, direction, entry_time, entry_price,

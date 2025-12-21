@@ -261,6 +261,10 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
 
         # Extraer campos del mensaje
         symbol = message.get("symbol")
+        # Normalizar symbol a MAYÚSCULAS para consistencia con BD
+        if symbol:
+            symbol = symbol.upper()
+
         entry_price = message.get("entry")
         stop_loss = message.get("stop")
         target_price = message.get("target")
