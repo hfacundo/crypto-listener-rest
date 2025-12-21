@@ -141,6 +141,9 @@ class RecentTradeValidator:
             # FIXED: No incluir 'timeout_lost' porque ya esperó N horas para cerrarse
             LOSING_EXIT_REASONS = ['stop_hit', 'manual_lost']
 
+            # Exit reasons que NO requieren cooldown (ganancias o breakeven)
+            NON_LOSING_EXIT_REASONS = ['target_hit', 'timeout_win', 'manual_win', 'timeout_breakeven', 'manual_breakeven']
+
             # Legacy exit_reasons (datos viejos sin sufijos win/lost) - tratar como "no loss"
             LEGACY_EXIT_REASONS = ['manual_close', 'close_manual', 'timeout', 'guardian_close']
 
@@ -159,10 +162,13 @@ class RecentTradeValidator:
                         f"   ✅ DECISION: ALLOW TRADE - {exit_reason} {hours_since_close:.1f}h ago "
                         f"(cooldown {cooldown_hours}h expired)"
                     )
+            elif exit_reason in NON_LOSING_EXIT_REASONS:
+                logger.info(f"   ✅ DECISION: ALLOW TRADE - Last trade was {exit_reason} (win/breakeven, no cooldown)")
             elif exit_reason in LEGACY_EXIT_REASONS:
                 logger.warning(f"   ⚠️ DECISION: ALLOW TRADE - Last trade has legacy exit_reason '{exit_reason}' (no cooldown applied, consider updating crypto-guardian)")
             else:
-                logger.info(f"   ✅ DECISION: ALLOW TRADE - Last trade was {exit_reason} (not a loss)")
+                # Unknown exit_reason - permitir por seguridad pero loguear advertencia
+                logger.warning(f"   ⚠️ DECISION: ALLOW TRADE - Unknown exit_reason '{exit_reason}' (allowing by default)")
 
             # Ganó o cooldown expiró → Permitir
             return True, f"OK (last trade: {exit_reason}, closed {self._format_time_ago(exit_time)})"
@@ -171,12 +177,45 @@ class RecentTradeValidator:
         # PASO 4: exit_time NULL pero exit_reason != 'active'
         # ===================================================================
         # Caso raro: datos corruptos o proceso de actualización a medias
+        # CRÍTICO: Si es pérdida sin exit_time, aplicar cooldown conservador
         if last_trade['exit_reason'] != 'active':
             logger.warning(
                 f"⚠️ Trade with exit_reason='{last_trade['exit_reason']}' but no exit_time: "
                 f"{user_id}/{symbol}"
             )
-            # Permitir por seguridad (asumir que ya cerró)
+
+            # Si es una PÉRDIDA sin exit_time → Aplicar cooldown conservador
+            # (Usar entry_time como estimación para evitar bypass de revenge trading)
+            LOSING_EXIT_REASONS = ['stop_hit', 'manual_lost']
+
+            if last_trade['exit_reason'] in LOSING_EXIT_REASONS:
+                # Usar entry_time como estimación conservadora del cierre
+                # Asumimos que el trade se cerró poco después de abrirse
+                entry_time = last_trade['entry_time']
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+
+                hours_since_entry = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
+
+                # Aplicar cooldown basado en entry_time (conservador)
+                if hours_since_entry < cooldown_hours:
+                    logger.warning(
+                        f"   ❌ DECISION: REJECT TRADE - {last_trade['exit_reason']} detected but no exit_time. "
+                        f"Using entry_time ({hours_since_entry:.1f}h ago) for cooldown calculation. "
+                        f"Cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_entry:.1f}h"
+                    )
+                    return False, (
+                        f"{last_trade['exit_reason']} detected for {symbol} "
+                        f"(corrupted data: no exit_time, using entry_time {hours_since_entry:.1f}h ago, "
+                        f"cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_entry:.1f}h)"
+                    )
+                else:
+                    logger.info(
+                        f"   ✅ DECISION: ALLOW TRADE - {last_trade['exit_reason']} detected {hours_since_entry:.1f}h ago "
+                        f"(cooldown {cooldown_hours}h expired, based on entry_time)"
+                    )
+
+            # Datos corruptos pero NO es pérdida (win/breakeven/legacy) → permitir por seguridad
             return True, f"OK (trade marked as {last_trade['exit_reason']} but no exit_time)"
 
         # ===================================================================
