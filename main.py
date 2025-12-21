@@ -348,10 +348,7 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
             stop_price=stop_loss,
             target_price=target_price,
             probability=probability,
-            sqs=signal_quality_score,
-            rr=rr,
-            tier=tier,  # ✨ NEW: Pass tier to validator
-            ev=ev  # ✨ NEW: Pass EV to validator
+            rr=rr
         )
 
         if not can_trade:
@@ -427,7 +424,6 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
                     stop_price=stop_loss,
                     target_price=target_price,
                     probability=probability,
-                    sqs=signal_quality_score,
                     rr=rr,
                     order_id=order_id,
                     sl_order_id=sl_order_id,

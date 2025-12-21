@@ -7,11 +7,12 @@ Valida si se puede abrir un nuevo trade basándose en historial de BD.
 NO llama a Binance - confía en que crypto-guardian actualiza BD en tiempo real.
 
 REGLAS:
-1. Si el último trade perdió (stop_hit) hace < 6 horas → RECHAZAR
-2. Si el último trade ganó (target_hit) → PERMITIR inmediatamente
-3. Si el último trade perdió pero hace > 6 horas → PERMITIR
-4. Si no hay historial → PERMITIR
-5. Si trade está 'active' en BD → Verificar Redis (no Binance)
+1. Si el último trade perdió (stop_hit o manual_lost) hace < N horas → RECHAZAR (cooldown)
+2. Si el último trade ganó (target_hit, timeout_win, manual_win) → PERMITIR inmediatamente
+3. Si el último trade fue timeout_lost → PERMITIR inmediatamente (ya esperó N horas por timeout)
+4. Si el último trade perdió pero hace > N horas → PERMITIR (cooldown expiró)
+5. Si no hay historial → PERMITIR
+6. Si trade está 'active' en BD → Verificar Redis o detectar orphan orders
 
 VENTAJAS:
 - ✅ 0 llamadas a Binance (lee solo BD + Redis)
@@ -136,22 +137,30 @@ class RecentTradeValidator:
 
             logger.info(f"   📊 Last trade status: exit_reason={exit_reason}, exit_time={self._format_time_ago(exit_time)}")
 
-            # Solo aplicar cooldown si PERDIÓ
-            if exit_reason == 'stop_hit':
+            # Aplicar cooldown solo para pérdidas que requieren espera adicional
+            # FIXED: No incluir 'timeout_lost' porque ya esperó N horas para cerrarse
+            LOSING_EXIT_REASONS = ['stop_hit', 'manual_lost']
+
+            # Legacy exit_reasons (datos viejos sin sufijos win/lost) - tratar como "no loss"
+            LEGACY_EXIT_REASONS = ['manual_close', 'close_manual', 'timeout', 'guardian_close']
+
+            if exit_reason in LOSING_EXIT_REASONS:
                 if hours_since_close < cooldown_hours:
                     logger.warning(
-                        f"   ❌ DECISION: REJECT TRADE - Stop hit {hours_since_close:.1f}h ago "
+                        f"   ❌ DECISION: REJECT TRADE - {exit_reason} {hours_since_close:.1f}h ago "
                         f"(cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_close:.1f}h)"
                     )
                     return False, (
-                        f"Stop hit {hours_since_close:.1f}h ago for {symbol} "
+                        f"{exit_reason} {hours_since_close:.1f}h ago for {symbol} "
                         f"(cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_close:.1f}h)"
                     )
                 else:
                     logger.info(
-                        f"   ✅ DECISION: ALLOW TRADE - Stop hit {hours_since_close:.1f}h ago "
+                        f"   ✅ DECISION: ALLOW TRADE - {exit_reason} {hours_since_close:.1f}h ago "
                         f"(cooldown {cooldown_hours}h expired)"
                     )
+            elif exit_reason in LEGACY_EXIT_REASONS:
+                logger.warning(f"   ⚠️ DECISION: ALLOW TRADE - Last trade has legacy exit_reason '{exit_reason}' (no cooldown applied, consider updating crypto-guardian)")
             else:
                 logger.info(f"   ✅ DECISION: ALLOW TRADE - Last trade was {exit_reason} (not a loss)")
 
@@ -195,17 +204,21 @@ class RecentTradeValidator:
             if exit_time.tzinfo is None:
                 exit_time = exit_time.replace(tzinfo=timezone.utc)
 
-            if exit_reason == 'stop_hit':
+            # Aplicar cooldown solo para pérdidas que requieren espera adicional
+            LOSING_EXIT_REASONS = ['stop_hit', 'manual_lost']
+            LEGACY_EXIT_REASONS = ['manual_close', 'close_manual', 'timeout', 'guardian_close']
+
+            if exit_reason in LOSING_EXIT_REASONS:
                 # Trade perdedor → Aplicar cooldown para evitar revenge trading
                 hours_since_close = (datetime.now(timezone.utc) - exit_time).total_seconds() / 3600
 
                 if hours_since_close < cooldown_hours:
                     return False, (
-                        f"Stop hit {hours_since_close:.1f}h ago for {symbol} "
+                        f"{exit_reason} {hours_since_close:.1f}h ago for {symbol} "
                         f"(cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_close:.1f}h)"
                     )
 
-            # Trade ganador (target_hit, manual_close, guardian_close) o cooldown expiró → Permitir
+            # Trade ganador (target_hit, timeout_win, manual_win), legacy, o cooldown expiró → Permitir
             logger.info(
                 f"✅ Recent closed trade found for {user_id}/{symbol}: {exit_reason} "
                 f"({self._format_time_ago(exit_time)}) - Allowing new trade"
@@ -264,7 +277,10 @@ class RecentTradeValidator:
                     )
 
                     # Si perdió (stop_hit), aplicar cooldown
-                    if exit_reason == 'stop_hit':
+                    # Orphan detector solo devuelve 'stop_hit' o 'target_hit'
+                    LOSING_EXIT_REASONS = ['stop_hit', 'manual_lost']
+
+                    if exit_reason in LOSING_EXIT_REASONS:
                         if exit_time.tzinfo is None:
                             exit_time = exit_time.replace(tzinfo=timezone.utc)
 
@@ -272,17 +288,17 @@ class RecentTradeValidator:
 
                         if hours_since_close < cooldown_hours:
                             logger.warning(
-                                f"   ❌ DECISION: REJECT TRADE - Orphan stop hit {hours_since_close:.1f}h ago "
+                                f"   ❌ DECISION: REJECT TRADE - Orphan {exit_reason} {hours_since_close:.1f}h ago "
                                 f"(cooldown: {cooldown_hours}h, remaining: {cooldown_hours - hours_since_close:.1f}h)"
                             )
                             return False, (
-                                f"Stop hit {hours_since_close:.1f}h ago for {symbol} "
+                                f"{exit_reason} {hours_since_close:.1f}h ago for {symbol} "
                                 f"(detected via orphan order, cooldown: {cooldown_hours}h, "
                                 f"remaining: {cooldown_hours - hours_since_close:.1f}h)"
                             )
                         else:
                             logger.info(
-                                f"   ✅ DECISION: ALLOW TRADE - Orphan stop hit {hours_since_close:.1f}h ago "
+                                f"   ✅ DECISION: ALLOW TRADE - Orphan {exit_reason} {hours_since_close:.1f}h ago "
                                 f"(cooldown {cooldown_hours}h expired)"
                             )
 
@@ -334,10 +350,6 @@ class RecentTradeValidator:
             True si existe trade con exit_reason='active'
         """
         try:
-            if not self.trade_protection:
-                logger.warning(f"TradeProtectionSystem not available")
-                return False
-
             query = """
             SELECT id
             FROM trade_history
@@ -348,7 +360,7 @@ class RecentTradeValidator:
             LIMIT 1
             """
 
-            conn = self.trade_protection._get_conn()
+            conn = self._get_conn()
             with conn.cursor() as cur:
                 cur.execute(query, (user_id, symbol, strategy))
                 result = cur.fetchone()

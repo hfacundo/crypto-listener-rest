@@ -87,7 +87,7 @@ class TradeProtectionSystem:
             exit_price DECIMAL(20, 8),
             stop_price DECIMAL(20, 8),
             target_price DECIMAL(20, 8),
-            exit_reason VARCHAR(20),  -- 'target_hit', 'stop_hit', 'timeout', 'active'
+            exit_reason VARCHAR(20),  -- 'target_hit', 'stop_hit', 'timeout_win', 'timeout_lost', 'timeout_breakeven', 'manual_win', 'manual_lost', 'manual_breakeven', 'active'
             pnl_pct DECIMAL(10, 4),
             pnl_usdt DECIMAL(15, 2),
             probability DECIMAL(5, 2),
@@ -346,7 +346,7 @@ class TradeProtectionSystem:
         strategy: str,
         trade_id: int,
         exit_price: float,
-        exit_reason: str,  # 'stop_loss', 'take_profit', 'guardian_close', 'half_close', 'manual'
+        exit_reason: str,  # 'target_hit', 'stop_hit', 'timeout_win', 'timeout_lost', 'timeout_breakeven', 'manual_win', 'manual_lost', 'manual_breakeven'
         pnl: float,
         exit_time: Optional[datetime] = None
     ) -> bool:
@@ -359,7 +359,15 @@ class TradeProtectionSystem:
             strategy: Nombre de la estrategia (ej: "archer_dual")
             trade_id: ID del trade a actualizar
             exit_price: Precio de salida
-            exit_reason: Razón del cierre
+            exit_reason: Razón del cierre con sufijo win/lost:
+                - 'target_hit': TP tocó (ganancia)
+                - 'stop_hit': SL tocó (pérdida)
+                - 'timeout_win': cerrado por timeout con ganancia
+                - 'timeout_lost': cerrado por timeout con pérdida
+                - 'timeout_breakeven': cerrado por timeout sin ganancia ni pérdida
+                - 'manual_win': cerrado manualmente con ganancia
+                - 'manual_lost': cerrado manualmente con pérdida
+                - 'manual_breakeven': cerrado manualmente sin ganancia ni pérdida
             pnl: PnL en USDT (positivo = ganancia, negativo = pérdida)
             exit_time: Timestamp de salida (si None, usa NOW())
 

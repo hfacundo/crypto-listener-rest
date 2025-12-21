@@ -264,7 +264,14 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
         user_id: ID del usuario
         strategy: Nombre de la estrategia
         exit_price: Precio de salida
-        exit_reason: Razón del cierre ('stop_loss', 'take_profit', 'guardian_close', 'half_close', 'manual')
+        exit_reason: Razón del cierre con sufijo win/lost:
+            - 'target_hit': TP tocó (ganancia)
+            - 'stop_hit': SL tocó (pérdida)
+            - 'timeout_win': cerrado por timeout con ganancia
+            - 'timeout_lost': cerrado por timeout con pérdida
+            - 'timeout_breakeven': cerrado por timeout sin ganancia ni pérdida
+            - 'manual_win': cerrado manualmente con ganancia
+            - 'manual_lost': cerrado manualmente con pérdida
         pnl: PnL en USDT (debe obtenerse ANTES de cerrar la posición)
         client: Cliente de Binance
 
@@ -278,13 +285,13 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
         protection_system = TradeProtectionSystem()
 
         # Obtener trade_id desde PostgreSQL (no Redis)
+        # FIXED: Buscar el ÚLTIMO trade sin filtrar por exit_reason (puede haber múltiples 'active')
         query = """
-        SELECT id
+        SELECT id, exit_reason
         FROM trade_history
         WHERE user_id = %s
           AND symbol = %s
           AND strategy = %s
-          AND exit_reason = 'active'
         ORDER BY entry_time DESC
         LIMIT 1
         """
@@ -295,11 +302,18 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
             result = cur.fetchone()
 
         if not result:
-            print(f"⚠️ No active trade found in DB for {symbol} ({user_id})")
+            print(f"⚠️ No trade found in DB for {symbol} ({user_id})")
             conn.close()
             return False
 
-        trade_id = result[0]
+        trade_id, current_exit_reason = result
+
+        # Verificar si el trade ya fue cerrado
+        if current_exit_reason != 'active':
+            print(f"⚠️ Trade {trade_id} already closed with exit_reason='{current_exit_reason}' for {symbol} ({user_id})")
+            conn.close()
+            return False
+
         conn.close()
 
         # Actualizar en PostgreSQL (PNL ya calculado ANTES de cerrar)
@@ -361,13 +375,22 @@ def close_position_and_cancel_orders(symbol: str, client, user_id: str, strategy
             reduceOnly=True
         )
 
+        # Determinar exit_reason basado en PNL (timeout cierra por crypto-guardian)
+        # FIXED: Usar sufijos win/lost para que crypto-listener-rest pueda aplicar cooldown correctamente
+        if unrealized_pnl > 0:
+            exit_reason = "timeout_win"  # Ganancia por timeout
+        elif unrealized_pnl < 0:
+            exit_reason = "timeout_lost"  # Pérdida por timeout
+        else:
+            exit_reason = "timeout_breakeven"  # Breakeven (raro)
+
         # Actualizar PostgreSQL con el cierre (PNL obtenido ANTES de cerrar)
         _update_trade_in_postgresql(
             symbol=symbol,
             user_id=user_id,
             strategy=strategy,
             exit_price=mark_price,
-            exit_reason="guardian_close",
+            exit_reason=exit_reason,
             pnl=unrealized_pnl,  # ← PNL real obtenido ANTES de cerrar
             client=client
         )

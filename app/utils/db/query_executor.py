@@ -199,7 +199,10 @@ def update_trade_status(symbol: str, user_id: str, status: str) -> None:
     # Mapear status a exit_reason
     exit_reason_map = {
         "success": "target_hit",
-        "fail": "stop_hit"
+        "fail": "stop_hit",
+        # Legacy mappings (datos viejos antes de implementar sufijos win/lost)
+        "close_manual": "manual_close",  # Marcador legacy, será ignorado por cooldown
+        "manual_close": "manual_close",  # Marcador legacy, será ignorado por cooldown
     }
     exit_reason = exit_reason_map.get(status, status)
 
