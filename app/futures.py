@@ -335,6 +335,76 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
         print(f"⚠️ Error updating trade in PostgreSQL: {e}")
         return False
 
+def _force_cancel_all_sl_tp_orders(symbol: str, client, user_id: str) -> int:
+    """
+    Cancela TODAS las órdenes SL/TP existentes, incluso si hay posición activa.
+    Esta función es SOLO para uso en ajustes manuales donde inmediatamente
+    se recrearán nuevas órdenes SL/TP.
+
+    Args:
+        symbol: Trading pair (e.g., "BTCUSDT")
+        client: Binance client
+        user_id: User ID (for logging)
+
+    Returns:
+        int: Number of orders canceled
+    """
+    canceled_count = 0
+
+    try:
+        # 1) Cancel traditional SL/TP orders
+        open_orders = client.futures_get_open_orders(symbol=symbol)
+        for order in open_orders:
+            order_type = order.get("type", "")
+            if order_type in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]:
+                try:
+                    client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
+                    print(f"✅ Canceled traditional {order_type} order {order['orderId']} for {symbol} ({user_id})")
+                    canceled_count += 1
+                except Exception as e:
+                    print(f"⚠️ Could not cancel traditional order {order['orderId']}: {e}")
+
+        # 2) Cancel Algo SL/TP orders
+        try:
+            algo_response = client._request_futures_api(
+                'get',
+                'openAlgoOrders',
+                signed=True,
+                data={"symbol": symbol}
+            )
+
+            algo_orders = []
+            if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                algo_orders = algo_response["openOrders"]
+            elif isinstance(algo_response, list):
+                algo_orders = algo_response
+
+            for algo_order in algo_orders:
+                algo_type = algo_order.get("algoType") or algo_order.get("type", "")
+                if algo_type in ["STOP_MARKET", "STOP", "TAKE_PROFIT_MARKET", "TAKE_PROFIT"]:
+                    try:
+                        algo_id = algo_order.get("algoId")
+                        client._request_futures_api(
+                            'delete',
+                            'algoOrder',
+                            signed=True,
+                            data={"symbol": symbol, "algoId": algo_id}
+                        )
+                        print(f"✅ Canceled Algo {algo_type} order {algo_id} for {symbol} ({user_id})")
+                        canceled_count += 1
+                    except Exception as e:
+                        print(f"⚠️ Could not cancel Algo order {algo_order.get('algoId')}: {e}")
+
+        except Exception as e:
+            print(f"⚠️ Could not fetch/cancel Algo Orders for {symbol}: {e}")
+
+    except Exception as e:
+        print(f"⚠️ Error in _force_cancel_all_sl_tp_orders for {symbol}: {e}")
+
+    print(f"🧹 Forced cancellation complete: {canceled_count} SL/TP order(s) canceled for {symbol} ({user_id})")
+    return canceled_count
+
+
 # NEW: close (reduce-only) + cleanup SL/TP
 def close_position_and_cancel_orders(symbol: str, client, user_id: str, strategy: str = "archer_model") -> dict:
     """
@@ -429,8 +499,10 @@ def adjust_sl_tp_for_open_position(symbol: str, new_stop: float, new_target: flo
         if direction == "SELL" and not (target_r <= mark_price < stop_r):
             return {"success": False, "error": "Invalid levels for SHORT (expect target <= mark < stop)"}
 
-        # 4) Cancel existing conditional exits (avoid duplicates/conflicts)
-        cancel_orphan_orders(symbol, client, user_id)
+        # 4) FORCE cancel ALL existing SL/TP orders (even with active position)
+        # This is safe because we immediately recreate them below
+        # Using dedicated function instead of cancel_orphan_orders which skips cancellation if position is active
+        _force_cancel_all_sl_tp_orders(symbol, client, user_id)
 
         # 5) Recreate SL/TP as closePosition orders using your validators helpers
         exit_side = "SELL" if direction == "BUY" else "BUY"
