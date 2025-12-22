@@ -647,7 +647,7 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                 if order_type in ["STOP_MARKET", "STOP"]:
                     stop_orders.append((algo_order, True))  # True = es Algo Order
                     try:
-                        current_stop = float(algo_order.get("stopPrice", 0))
+                        current_stop = float(algo_order.get("triggerPrice", 0))
                     except Exception:
                         pass
         except Exception as e:

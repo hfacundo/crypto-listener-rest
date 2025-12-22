@@ -933,7 +933,7 @@ async def set_take_profit(request: SetTakeProfitRequest):
                 for algo_order in algo_orders:
                     order_type = algo_order.get("algoType") or algo_order.get("type", "")
                     if order_type in ["STOP_MARKET", "STOP"]:
-                        current_sl = float(algo_order.get("stopPrice", 0))
+                        current_sl = float(algo_order.get("triggerPrice", 0))
                         break
             except Exception as e:
                 logger.warning(f"⚠️ Could not fetch Algo Orders: {e}")
