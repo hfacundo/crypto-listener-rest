@@ -743,6 +743,117 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
         return {"success": False, "error": f"adjust_stop_only failed: {e}"}
 
 
+def adjust_tp_only_for_open_position(symbol: str, new_target: float, client, user_id: str) -> dict:
+    """
+    Ajusta SOLO el Take Profit de una posición abierta:
+      - Detecta dirección por positionAmt (BUY si >0, SELL si <0)
+      - Obtiene el TAKE_PROFIT_MARKET actual desde órdenes abiertas
+      - Cancela el/los TAKE_PROFIT_MARKET actuales y crea uno nuevo
+      - No toca el SL existente
+      - No requiere que exista un stop loss (funciona independientemente)
+
+    Args:
+        symbol: Trading pair
+        new_target: New take profit price
+        client: Binance client
+        user_id: User ID
+
+    Returns:
+        Dict with success, target, previous_target, adjustment_confirmed, etc.
+    """
+    try:
+        # 0) Validar que haya posición
+        positions = client.futures_position_information(symbol=symbol)
+        if not positions or float(positions[0].get("positionAmt", "0")) == 0.0:
+            return {"success": False, "error": "No open position to adjust"}
+
+        position_amt = float(positions[0]["positionAmt"])
+        direction = "BUY" if position_amt > 0 else "SELL"
+        exit_side = "SELL" if direction == "BUY" else "BUY"
+
+        # 1) Normalizar new_target a tick y validar rango
+        filters = get_symbol_filters(symbol, client)
+        tick_size = Decimal(str(filters["PRICE_FILTER"]["tickSize"]))
+        min_price = Decimal(str(filters["PRICE_FILTER"].get("minPrice", "0")))
+        max_price = Decimal(str(filters["PRICE_FILTER"].get("maxPrice", "100000000")))
+
+        nt = Decimal(str(new_target))
+        # redondear a múltiplo exacto de tick
+        nt_rounded = (nt // tick_size) * tick_size
+        if nt_rounded != nt:
+            nt = nt_rounded
+
+        if nt < min_price or nt > max_price:
+            return {"success": False, "error": f"Target {nt} outside PRICE_FILTER bounds"}
+
+        new_target_f = float(nt)
+
+        # 2) Obtener TP actual usando get_current_sl_tp (para tracking)
+        _, current_target = get_current_sl_tp(symbol, client)
+
+        # 3) Chequeo de sanidad respecto al mark actual
+        mark_price = get_mark_price(symbol, client)
+        if direction == "BUY" and not (new_target_f > mark_price):
+            return {"success": False, "error": "Invalid TP for LONG (expected new_target > mark)"}
+        if direction == "SELL" and not (new_target_f < mark_price):
+            return {"success": False, "error": "Invalid TP for SHORT (expected new_target < mark)"}
+
+        # 4) Cancelar TODAS las órdenes TP existentes usando cancel_tp_only (más robusto)
+        print(f"🗑️ Canceling all existing TP orders for {symbol}...")
+        cancel_result = cancel_tp_only(symbol, client, user_id)
+        if cancel_result.get("canceled_count", 0) > 0:
+            print(f"✅ Cancelled {cancel_result['canceled_count']} TP order(s)")
+            # Esperar un poco para que Binance procese las cancelaciones
+            import time
+            time.sleep(0.5)
+
+        # 5) Crear nuevo TAKE_PROFIT_MARKET (closePosition=True)
+        tp_res = create_take_profit_order(symbol, exit_side, new_target_f, client, user_id)
+        if not tp_res:
+            return {"success": False, "error": "Failed to create new TAKE_PROFIT_MARKET"}
+
+        # 6) PHASE 3: Verificar que la orden TP realmente existe en Binance (post-creation verification)
+        tp_verified = False
+        try:
+            import time
+            time.sleep(0.3)  # Breve pausa para permitir propagación en Binance
+            algo_response = client._request_futures_api('get', 'openAlgoOrders', signed=True, data={"symbol": symbol})
+            algo_orders = []
+            if isinstance(algo_response, dict) and "openOrders" in algo_response:
+                algo_orders = algo_response["openOrders"]
+            elif isinstance(algo_response, list):
+                algo_orders = algo_response
+
+            # Buscar la orden recién creada por algoId
+            created_algo_id = tp_res.get("algoId")
+            if created_algo_id:
+                for algo_order in algo_orders:
+                    if algo_order.get("algoId") == created_algo_id:
+                        tp_verified = True
+                        print(f"✅ TP order verified in Binance (algoId: {created_algo_id})")
+                        break
+
+            if not tp_verified:
+                print(f"⚠️ WARNING: TP order created but not found in Binance open orders (algoId: {created_algo_id})")
+                print(f"⚠️ Manual verification recommended.")
+                # No retornamos error para no bloquear el flujo, pero dejamos warning en logs
+        except Exception as e:
+            print(f"⚠️ Could not verify TP order creation: {e}")
+
+        # ✅ Take profit updated in Binance
+        return {
+            "success": True,
+            "direction": direction,
+            "target": new_target_f,
+            "previous_target": current_target,
+            "adjustment_confirmed": True
+        }
+
+    except Exception as e:
+        print("Exception in adjust_tp_only_for_open_position:", e)
+        return {"success": False, "error": f"adjust_tp_only failed: {e}"}
+
+
 def half_close_and_move_be(symbol: str, client, user_id: str) -> dict:
     """
     1) Close 50% of the current position (reduceOnly MARKET).
@@ -920,10 +1031,25 @@ def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
     try:
         canceled_count = 0
 
+        # Get position direction and mark price to distinguish TP from SL
+        try:
+            positions = client.futures_position_information(symbol=symbol)
+            position_amt = float(positions[0].get("positionAmt", "0")) if positions else 0
+            is_long = position_amt > 0
+            mark_price = get_mark_price(symbol, client)
+            print(f"🔍 DEBUG: Position direction: {'LONG' if is_long else 'SHORT'}, mark_price: {mark_price}")
+        except Exception as e:
+            print(f"⚠️ Could not get position info: {e}")
+            is_long = None
+            mark_price = None
+
         # Cancel traditional TP orders
         open_orders = client.futures_get_open_orders(symbol=symbol)
+        print(f"🔍 DEBUG: Found {len(open_orders)} open traditional orders for {symbol}")
         for order in open_orders:
-            if order.get("type") == "TAKE_PROFIT_MARKET":
+            order_type = order.get("type")
+            print(f"  - Order type: {order_type}, orderId: {order.get('orderId')}")
+            if order_type == "TAKE_PROFIT_MARKET":
                 client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
                 canceled_count += 1
                 print(f"✅ Canceled traditional TP order {order['orderId']} for {symbol}")
@@ -943,10 +1069,23 @@ def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
             elif isinstance(algo_response, list):
                 algo_orders = algo_response
 
+            print(f"🔍 DEBUG: Found {len(algo_orders)} Algo orders for {symbol}")
             for order in algo_orders:
                 algo_type = order.get("algoType") or order.get("type", "")
+                algo_id = order.get("algoId")
+                side = order.get("side", "")
+                position_side = order.get("positionSide", "")
+                trigger_price_str = order.get("triggerPrice", "0")
+
+                try:
+                    trigger_price = float(trigger_price_str)
+                except:
+                    trigger_price = 0
+
+                print(f"  - Algo type: {algo_type}, algoId: {algo_id}, side: {side}, positionSide: {position_side}, triggerPrice: {trigger_price}")
+
+                # Match explicit TP types
                 if algo_type in ["TAKE_PROFIT_MARKET", "TAKE_PROFIT"]:
-                    algo_id = order.get("algoId")
                     client._request_futures_api(
                         'delete',
                         'algoOrder',
@@ -955,6 +1094,28 @@ def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
                     )
                     canceled_count += 1
                     print(f"✅ Canceled Algo TP order {algo_id} for {symbol}")
+
+                # For CONDITIONAL orders, determine if it's TP or SL based on trigger price
+                elif algo_type == "CONDITIONAL" and is_long is not None and mark_price and trigger_price:
+                    is_tp_order = False
+                    if is_long:
+                        # For LONG: TP is above mark price, SL is below
+                        is_tp_order = (trigger_price > mark_price)
+                    else:
+                        # For SHORT: TP is below mark price, SL is above
+                        is_tp_order = (trigger_price < mark_price)
+
+                    if is_tp_order:
+                        client._request_futures_api(
+                            'delete',
+                            'algoOrder',
+                            signed=True,
+                            data={"symbol": symbol.upper(), "algoId": algo_id}
+                        )
+                        canceled_count += 1
+                        print(f"✅ Canceled Algo TP order (CONDITIONAL) {algo_id} for {symbol} (trigger: {trigger_price}, mark: {mark_price})")
+                    else:
+                        print(f"⏭️ Skipping SL order (CONDITIONAL) {algo_id} - keeping it intact")
 
         except Exception as e:
             print(f"⚠️ Could not cancel Algo TP orders: {e}")

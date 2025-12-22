@@ -23,6 +23,7 @@ from app.futures import (
     close_position_and_cancel_orders,
     adjust_sl_tp_for_open_position,
     adjust_stop_only_for_open_position,
+    adjust_tp_only_for_open_position,  # NEW: Adjust only TP (independent of SL)
     half_close_and_move_be,
     get_current_sl_tp,  # NEW: Get current SL/TP from orders
     cancel_tp_only,     # NEW: Cancel only TP orders
@@ -910,44 +911,9 @@ async def set_take_profit(request: SetTakeProfitRequest):
 
         # ==========================================
 
-        # Get current stop loss from open orders
-        open_orders = client.futures_get_open_orders(symbol=symbol)
-        current_sl = None
-
-        # Try traditional orders first
-        for order in open_orders:
-            if order.get("type") == "STOP_MARKET":
-                current_sl = float(order.get("stopPrice", 0))
-                break
-
-        # If not found in traditional, check Algo Orders
-        if current_sl is None:
-            try:
-                algo_response = client._request_futures_api('get', 'openAlgoOrders', signed=True, data={"symbol": symbol})
-                algo_orders = []
-                if isinstance(algo_response, dict) and "openOrders" in algo_response:
-                    algo_orders = algo_response["openOrders"]
-                elif isinstance(algo_response, list):
-                    algo_orders = algo_response
-
-                for algo_order in algo_orders:
-                    order_type = algo_order.get("algoType") or algo_order.get("type", "")
-                    if order_type in ["STOP_MARKET", "STOP"]:
-                        current_sl = float(algo_order.get("triggerPrice", 0))
-                        break
-            except Exception as e:
-                logger.warning(f"⚠️ Could not fetch Algo Orders: {e}")
-
-        if current_sl is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No stop loss order found for {symbol}. Please use /adjust-sl-tp to set both."
-            )
-
-        # Adjust both SL (keep current) and TP (new value)
-        result = adjust_sl_tp_for_open_position(
+        # Adjust only take profit (independent of stop loss)
+        result = adjust_tp_only_for_open_position(
             symbol=symbol,
-            new_stop=current_sl,
             new_target=take_profit,
             client=client,
             user_id=user_id
@@ -962,8 +928,9 @@ async def set_take_profit(request: SetTakeProfitRequest):
                 "symbol": symbol,
                 "direction": direction,
                 "take_profit": result.get("target"),
+                "previous_take_profit": result.get("previous_target"),
                 "mark_price": mark_price,
-                "stop_loss": result.get("stop")
+                "adjustment_confirmed": result.get("adjustment_confirmed", False)
             }
         else:
             logger.warning(f"⚠️ Failed to update take profit: {user_id}/{symbol} - {result.get('error')}")
@@ -1373,20 +1340,11 @@ async def adjust_sl_tp_flexible(request: FlexibleAdjustRequest):
             )
 
         elif request.take_profit:
-            # Adjust only TP (need to keep current SL)
+            # Adjust only TP (independent of SL)
             logger.info(f"🎯 Adjusting only TP: {user_id}/{symbol} @ {request.take_profit}")
 
-            # Get current SL
-            sl_current, _ = get_current_sl_tp(symbol, client)
-            if sl_current is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No current SL found for {symbol}. Use /adjust-sl-tp to set both SL and TP."
-                )
-
-            result = adjust_sl_tp_for_open_position(
+            result = adjust_tp_only_for_open_position(
                 symbol=symbol,
-                new_stop=sl_current,
                 new_target=request.take_profit,
                 client=client,
                 user_id=user_id
