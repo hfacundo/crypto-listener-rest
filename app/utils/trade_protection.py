@@ -159,7 +159,7 @@ class TradeProtectionSystem:
             with conn.cursor() as cur:
                 cur.execute(schema)
             conn.commit()
-            print("✅ Trade protection tables initialized")
+            # print("✅ Trade protection tables initialized")
         except Exception as e:
             print(f"⚠️ Error initializing tables: {e}")
             conn.rollback()

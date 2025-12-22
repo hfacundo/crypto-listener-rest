@@ -35,7 +35,7 @@ def get_rules(user_id: str, strategy: str) -> dict:
     """
 
     # SIEMPRE intentar PostgreSQL primero
-    print(f"🗄️ Consultando rules desde PostgreSQL (user_rules) para {user_id}/{strategy}")
+    # print(f"🗄️ Consultando rules desde PostgreSQL (user_rules) para {user_id}/{strategy}")
     try:
         with get_engine().begin() as conn:
             result = conn.execute(
@@ -45,7 +45,7 @@ def get_rules(user_id: str, strategy: str) -> dict:
 
         if result:
             # JSONB se devuelve como dict directamente por psycopg2
-            print(f"✅ Rules obtenidas desde PostgreSQL para {user_id}/{strategy}")
+            # print(f"✅ Rules obtenidas desde PostgreSQL para {user_id}/{strategy}")
             return result[0]
         else:
             print(f"⚠️ No se encontraron rules para {user_id}/{strategy} en PostgreSQL")

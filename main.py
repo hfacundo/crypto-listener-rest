@@ -247,7 +247,7 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         # No event loop in this thread, create one
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        print(f"{log_prefix} Created new event loop for thread")
+        # print(f"{log_prefix} Created new event loop for thread")
 
     try:
         print(f"{log_prefix} Validando trade")
@@ -494,10 +494,10 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
     request_strategy = trade.strategy if trade.strategy else STRATEGY
     print(f"📊 Strategy received: {request_strategy}")
 
-    # Calcular horas UTC y Ciudad de México
+    # Calcular horas UTC y Ciudad de México en formato AM/PM
     now_utc = datetime.now(timezone.utc)
     now_cdmx = now_utc.astimezone(timezone(timedelta(hours=-6)))  # Ciudad de México UTC-6
-    time_str = f"🕐 {now_utc.strftime('%H:%M:%S')} UTC ({now_cdmx.strftime('%H:%M:%S')} CDMX)"
+    time_str = f"🕐 {now_utc.strftime('%I:%M:%S %p')} UTC ({now_cdmx.strftime('%I:%M:%S %p')} CDMX)"
 
     # Log del request recibido (solo una vez)
     direction_str = trade.trade.upper() if trade.trade else "UNKNOWN"
