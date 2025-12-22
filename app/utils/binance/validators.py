@@ -334,10 +334,20 @@ def validate_slippage(symbol: str, entry_price: float, order_book: dict) -> bool
     return True
 
 
-def adjust_prices_by_slippage(entry_price, stop_loss, target_price, symbol, filters, mark_price):
+def adjust_prices_by_slippage(entry_price, stop_loss, target_price, symbol, filters, mark_price, original_rr=None):
     """
-    Si hay slippage leve, ajusta entry_price al mark_price y reescala SL y TP
-    manteniendo la misma distancia relativa.
+    Ajusta entry_price al mark_price actual y reescala SL y TP.
+    Si se proporciona original_rr, mantiene el RR original del request.
+    Si no, mantiene la distancia relativa original (comportamiento anterior).
+
+    Args:
+        entry_price: Entry del request
+        stop_loss: Stop del request
+        target_price: Target del request
+        symbol: Símbolo
+        filters: Filtros de Binance
+        mark_price: Precio actual de Binance
+        original_rr: RR original del request (opcional)
 
     Returns:
         tuple: Nuevos (entry_price, stop_loss, target_price)
@@ -352,28 +362,48 @@ def adjust_prices_by_slippage(entry_price, stop_loss, target_price, symbol, filt
         mark_price = float(mark_price)
 
         original_sl_distance = abs(entry_price - stop_loss)
-        original_tp_distance = abs(target_price - entry_price)
 
         if entry_price > stop_loss:
             # LONG
-            new_sl = mark_price - original_sl_distance
-            new_tp = mark_price + original_tp_distance
             direction = "LONG"
+            new_sl = mark_price - original_sl_distance
+
+            # Si tenemos RR original, usarlo para calcular TP (mantiene RR)
+            if original_rr is not None:
+                new_tp = mark_price + (original_sl_distance * original_rr)
+            else:
+                # Fallback: mantener distancia original (comportamiento anterior)
+                original_tp_distance = abs(target_price - entry_price)
+                new_tp = mark_price + original_tp_distance
         else:
             # SHORT
-            new_sl = mark_price + original_sl_distance
-            new_tp = mark_price - original_tp_distance
             direction = "SHORT"
+            new_sl = mark_price + original_sl_distance
+
+            # Si tenemos RR original, usarlo para calcular TP (mantiene RR)
+            if original_rr is not None:
+                new_tp = mark_price - (original_sl_distance * original_rr)
+            else:
+                # Fallback: mantener distancia original (comportamiento anterior)
+                original_tp_distance = abs(target_price - entry_price)
+                new_tp = mark_price - original_tp_distance
 
         # Ajustar todos los precios al tickSize permitido
         entry_adj = adjust_price_to_tick(mark_price, tick_size)
         sl_adj    = adjust_price_to_tick(new_sl, tick_size)
         tp_adj    = adjust_price_to_tick(new_tp, tick_size)
 
-        print(f"🔁 Ajuste de precios por slippage para {symbol} [{direction}]")
-        print(f"📥 Original entry={entry_price:.4f}, SL={stop_loss:.4f}, TP={target_price:.4f}")
-        print(f"📤 Nuevo entry={entry_adj:.4f}, SL={sl_adj:.4f}, TP={tp_adj:.4f}")
-        print(f"📏 Distancias SL={original_sl_distance:.4f}, TP={original_tp_distance:.4f}")
+        # Calcular RR real después del ajuste al tick
+        actual_sl_distance = abs(entry_adj - sl_adj)
+        actual_tp_distance = abs(tp_adj - entry_adj)
+        actual_rr = actual_tp_distance / actual_sl_distance if actual_sl_distance > 0 else 0
+
+        print(f"🔁 Ajuste de precios para {symbol} [{direction}]")
+        print(f"📥 Request:  entry={entry_price:.4f}, SL={stop_loss:.4f}, TP={target_price:.4f}, RR={original_rr if original_rr else 'N/A'}")
+        print(f"📍 Mark actual: {mark_price:.4f}")
+        print(f"📤 Ajustado: entry={entry_adj:.4f}, SL={sl_adj:.4f}, TP={tp_adj:.4f}")
+        print(f"⚖️  RR después de ajuste: {actual_rr:.2f}")
+        print(f"📏 Distancias: SL={actual_sl_distance:.4f}, TP={actual_tp_distance:.4f}")
 
         return entry_adj, sl_adj, tp_adj
 

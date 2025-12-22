@@ -88,7 +88,7 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
         return {"success": False, "error": "Slippage too high"}
     else:
         entry_price, stop_loss, target_price = adjust_prices_by_slippage(
-            entry_price, stop_loss, target_price, symbol, filters, mark_price
+            entry_price, stop_loss, target_price, symbol, filters, mark_price, rr
         )
 
     # 6. Validar RR mínimo después del ajuste de precios
