@@ -8,6 +8,9 @@ import json
 from typing import Dict, Any, Optional
 from contextvars import ContextVar
 
+from app.utils.logger_config import get_logger
+logger = get_logger()
+
 # Import request_id_var from main (will be imported dynamically to avoid circular import)
 request_id_var: ContextVar[str] = ContextVar('request_id', default=None)
 
@@ -88,7 +91,7 @@ def log_manual_operation(
         return True
 
     except Exception as e:
-        print(f"⚠️ Error logging audit: {e}")
+        logger.warning(f"⚠️ Error logging audit: {e}")
         # Don't raise - audit logging should not break the main operation
         return False
 
@@ -164,7 +167,7 @@ def get_user_audit_history(
         return results
 
     except Exception as e:
-        print(f"⚠️ Error fetching audit history: {e}")
+        logger.warning(f"⚠️ Error fetching audit history: {e}")
         return []
 
 
@@ -233,7 +236,7 @@ def get_audit_statistics(user_id: Optional[str] = None) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f"⚠️ Error fetching audit statistics: {e}")
+        logger.warning(f"⚠️ Error fetching audit statistics: {e}")
         return {}
 
 
@@ -281,5 +284,5 @@ def get_recent_failures(limit: int = 20) -> list:
         return results
 
     except Exception as e:
-        print(f"⚠️ Error fetching recent failures: {e}")
+        logger.warning(f"⚠️ Error fetching recent failures: {e}")
         return []

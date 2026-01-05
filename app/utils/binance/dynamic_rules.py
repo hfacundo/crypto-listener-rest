@@ -3,6 +3,9 @@
 import json
 import traceback
 from sqlalchemy import create_engine, text
+
+from app.utils.logger_config import get_logger
+logger = get_logger()
 from app.utils.constants import (
     DEFAULT_LIQUIDITY_TIERS, MIN_DEPTH_BASE, DEPTH_PCT,
     MAX_SLIPPAGE_PCT, MAX_SLIPPAGE, DEFAULT_MAX_SLIPPAGE_PCT,
@@ -38,7 +41,7 @@ def adjust_base_depth_and_depth_pct_for_symbol(symbol, client, order_book, mark_
 
         # Fallback a API si Redis no disponible
         if not klines:
-            print(f"⚠️ Klines not in Redis for {symbol}, falling back to API")
+            logger.warning(f"⚠️ Klines not in Redis for {symbol}, falling back to API")
             klines = client.futures_klines(symbol=symbol, interval="1m", limit=60)
 
         total_quote_volume = sum(float(k[7]) for k in klines)
@@ -67,15 +70,15 @@ def adjust_base_depth_and_depth_pct_for_symbol(symbol, client, order_book, mark_
         for tier in tiers:
             if avg_quote_volume > tier["vol"] and depth_usdt > tier["depth"]:
                 result = {MIN_DEPTH_BASE: tier[MIN_DEPTH_BASE], DEPTH_PCT: tier[DEPTH_PCT]}
-                print(f"✅ Dynamic depth config for {symbol}: {result}")
+                logger.debug(f"✅ Dynamic depth config for {symbol}: {result}")
                 return result
 
         fallback = {MIN_DEPTH_BASE: 2, DEPTH_PCT: 0.10}
-        print(f"⚠️ Using fallback depth config for {symbol}: {fallback}")
+        logger.warning(f"⚠️ Using fallback depth config for {symbol}: {fallback}")
         return fallback
 
     except Exception as e:
-        print(f"❌ Error ajustando reglas dinámicas para {symbol}: {e}")
+        logger.error(f"❌ Error ajustando reglas dinámicas para {symbol}: {e}")
         return {MIN_DEPTH_BASE: 2, DEPTH_PCT: 0.10}
 
 
@@ -95,13 +98,13 @@ def get_dynamic_slippage_limits(symbol: str) -> dict:
     if result:
         max_slippage_pct = result[0] if result[0] is not None else DEFAULT_MAX_SLIPPAGE_PCT
         max_slippage = result[1] if result[1] is not None else DEFAULT_MAX_SLIPPAGE
-        print(f"⚙️ Slippage configurado para {symbol}: pct={max_slippage_pct}, abs={max_slippage}")
+        logger.debug(f"⚙️ Slippage configurado para {symbol}: pct={max_slippage_pct}, abs={max_slippage}")
         return {
             MAX_SLIPPAGE_PCT: max_slippage_pct,
             MAX_SLIPPAGE: max_slippage
         }
     else:
-        print(f"⚠️ No hay configuración de slippage en BD para {symbol}, usando default.")
+        logger.warning(f"⚠️ No hay configuración de slippage en BD para {symbol}, usando default.")
         return {
             MAX_SLIPPAGE_PCT: DEFAULT_MAX_SLIPPAGE_PCT,
             MAX_SLIPPAGE: DEFAULT_MAX_SLIPPAGE

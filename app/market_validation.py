@@ -4,6 +4,9 @@ import time
 from typing import Dict, Any, Tuple, Optional
 from app.utils.binance.binance_client import get_binance_client_for_user
 
+from app.utils.logger_config import get_logger
+logger = get_logger()
+
 
 def get_fresh_market_data(symbol: str, user_id: str) -> Dict[str, Any]:
     """
@@ -56,7 +59,7 @@ def get_fresh_market_data(symbol: str, user_id: str) -> Dict[str, Any]:
             if "depth_ask_usdt" in orderbook:
                 result["depth_ask_usdt"] = orderbook["depth_ask_usdt"]
 
-            print(f"✅ Market data from cache (optimized): {symbol}, spread={spread_pct:.4f}%")
+            logger.debug(f"✅ Market data from cache (optimized): {symbol}, spread={spread_pct:.4f}%")
             return result
         else:
             # Fallback: Cálculo manual tradicional
@@ -64,7 +67,7 @@ def get_fresh_market_data(symbol: str, user_id: str) -> Dict[str, Any]:
             best_ask = float(orderbook["asks"][0][0]) if orderbook["asks"] else 0
             spread_pct = ((best_ask - best_bid) / best_ask * 100) if best_ask > 0 else 0
 
-            print(f"⚠️ Market data from API fallback: {symbol}, spread={spread_pct:.4f}%")
+            logger.warning(f"⚠️ Market data from API fallback: {symbol}, spread={spread_pct:.4f}%")
             return {
                 "mark_price": mark_price,
                 "best_bid": best_bid,
@@ -75,7 +78,7 @@ def get_fresh_market_data(symbol: str, user_id: str) -> Dict[str, Any]:
             }
 
     except Exception as e:
-        print(f"❌ Error getting fresh market data for {symbol}: {e}")
+        logger.error(f"❌ Error getting fresh market data for {symbol}: {e}")
         return {
             "mark_price": 0,
             "error": str(e),
@@ -110,7 +113,7 @@ def validate_guardian_decision_freshness(message: Dict[str, Any],
         price_drift_pct = abs(current_price - trigger_price) / trigger_price * 100
         time_drift_sec = current_timestamp - trigger_timestamp
 
-        print(f"🔍 Validation: price_drift={price_drift_pct:.3f}%, time_drift={time_drift_sec:.1f}s")
+        logger.debug(f"🔍 Validation: price_drift={price_drift_pct:.3f}%, time_drift={time_drift_sec:.1f}s")
 
         # Validaciones específicas por tipo de acción
         if action == "close":
@@ -118,7 +121,7 @@ def validate_guardian_decision_freshness(message: Dict[str, Any],
             if time_drift_sec > 60:  # >1 minuto = muy stale
                 return False, f"close_too_stale_{time_drift_sec:.1f}s", {}
             if price_drift_pct > 2.0:  # >2% cambio de precio
-                print(f"⚠️ Significant price drift for CLOSE, but still executing: {price_drift_pct:.3f}%")
+                logger.warning(f"⚠️ Significant price drift for CLOSE, but still executing: {price_drift_pct:.3f}%")
             return True, "close_validated", {}
 
         elif action == "adjust":
@@ -151,7 +154,7 @@ def validate_guardian_decision_freshness(message: Dict[str, Any],
 
             if not entry or not side:
                 # Sin datos de entry/side, permitir ejecución (backward compatibility)
-                print("⚠️ Half-close without entry/side, allowing execution (legacy)")
+                logger.warning("⚠️ Half-close without entry/side, allowing execution (legacy)")
                 return True, "half_close_validated_legacy", {}
 
             # Validar que el trade sigue en profit (no importa si retrocedió del 50% al 40%)
@@ -159,13 +162,13 @@ def validate_guardian_decision_freshness(message: Dict[str, Any],
                 if current_price <= entry:
                     return False, f"half_close_no_profit_buy_price_{current_price:.6f}_entry_{entry:.6f}", {}
                 profit_pct = ((current_price - entry) / entry) * 100
-                print(f"✅ Half-close BUY validated: price={current_price:.6f}, entry={entry:.6f}, profit={profit_pct:.3f}%")
+                logger.info(f"✅ Half-close BUY validated: price={current_price:.6f}, entry={entry:.6f}, profit={profit_pct:.3f}%")
 
             else:  # SELL
                 if current_price >= entry:
                     return False, f"half_close_no_profit_sell_price_{current_price:.6f}_entry_{entry:.6f}", {}
                 profit_pct = ((entry - current_price) / entry) * 100
-                print(f"✅ Half-close SELL validated: price={current_price:.6f}, entry={entry:.6f}, profit={profit_pct:.3f}%")
+                logger.info(f"✅ Half-close SELL validated: price={current_price:.6f}, entry={entry:.6f}, profit={profit_pct:.3f}%")
 
             return True, "half_close_validated", {}
 
@@ -173,7 +176,7 @@ def validate_guardian_decision_freshness(message: Dict[str, Any],
             return True, "unknown_action_defaulted", {}
 
     except Exception as e:
-        print(f"❌ Error validating guardian decision: {e}")
+        logger.error(f"❌ Error validating guardian decision: {e}")
         return True, f"validation_error_{str(e)}", {}  # Default to allow execution
 
 
@@ -211,7 +214,7 @@ def get_adjusted_stop_from_scenarios(message: Dict[str, Any], current_price: flo
             return original_stop
 
     except Exception as e:
-        print(f"❌ Error getting adjusted stop from scenarios: {e}")
+        logger.error(f"❌ Error getting adjusted stop from scenarios: {e}")
         return None
 
 

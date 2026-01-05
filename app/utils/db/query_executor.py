@@ -5,6 +5,9 @@ import traceback
 import os
 from typing import Optional
 from sqlalchemy import create_engine, text
+
+from app.utils.logger_config import get_logger
+logger = get_logger()
 from app.utils.constants import (
     TABLE_RULES, TABLE_CRYPTOS, TABLE_TRADES, DEFAULT_SPREAD_MULTIPLIER
 )
@@ -48,25 +51,25 @@ def get_rules(user_id: str, strategy: str) -> dict:
             # print(f"✅ Rules obtenidas desde PostgreSQL para {user_id}/{strategy}")
             return result[0]
         else:
-            print(f"⚠️ No se encontraron rules para {user_id}/{strategy} en PostgreSQL")
-            print(f"🔄 Fallback a local_rules.py...")
+            logger.warning(f"⚠️ No se encontraron rules para {user_id}/{strategy} en PostgreSQL")
+            logger.info(f"🔄 Fallback a local_rules.py...")
             # Fallback a local_rules si no existe en BD
             try:
                 return get_local_rules(user_id, strategy)
             except ValueError as e:
-                print(f"❌ Error en fallback a local_rules: {e}")
+                logger.error(f"❌ Error en fallback a local_rules: {e}")
                 return {}
 
     except Exception as e:
-        print(f"❌ Error consultando PostgreSQL: {e}")
-        print(f"🆘 EMERGENCY FALLBACK: Usando local_rules.py para {user_id}/{strategy}")
+        logger.error(f"❌ Error consultando PostgreSQL: {e}")
+        logger.warning(f"🆘 EMERGENCY FALLBACK: Usando local_rules.py para {user_id}/{strategy}")
         traceback.print_exc()
 
         # Emergency fallback a local_rules si falla conexión a BD
         try:
             return get_local_rules(user_id, strategy)
         except ValueError as fallback_error:
-            print(f"❌ Emergency fallback también falló: {fallback_error}")
+            logger.error(f"❌ Emergency fallback también falló: {fallback_error}")
             return {}
 
 
@@ -99,12 +102,12 @@ def is_symbol_banned(user_id: str, strategy: str, symbol: str) -> bool:
             banned_list = result[0]  # JSONB array como lista de Python
             is_banned = symbol in banned_list
             if is_banned:
-                print(f"🚫 {symbol} está en la lista de banned symbols para {user_id}/{strategy}")
+                logger.info(f"🚫 {symbol} está en la lista de banned symbols para {user_id}/{strategy}")
             return is_banned
         else:
             return False
     except Exception as e:
-        print(f"⚠️ Error verificando banned symbols desde PostgreSQL: {e}")
+        logger.warning(f"⚠️ Error verificando banned symbols desde PostgreSQL: {e}")
         return False  # En caso de error, permitir el trade (fail-safe)
 
 
@@ -153,7 +156,7 @@ def save_trade(
             return True
 
     except Exception as e:
-        print(f"❌ Error guardando trade y recomendación para {symbol}: {e}")
+        logger.error(f"❌ Error guardando trade y recomendación para {symbol}: {e}")
         traceback.print_exc()
         return False
 
@@ -226,12 +229,12 @@ def update_trade_status(symbol: str, user_id: str, status: str) -> None:
 
             updated_id = result.fetchone()
             if updated_id:
-                print(f"🔄 Estado del trade actualizado a '{exit_reason}' para {symbol} ({user_id})")
+                logger.info(f"🔄 Estado del trade actualizado a '{exit_reason}' para {symbol} ({user_id})")
             else:
-                print(f"⚠️ No se encontró trade activo para actualizar con {symbol} ({user_id})")
+                logger.warning(f"⚠️ No se encontró trade activo para actualizar con {symbol} ({user_id})")
 
     except Exception as e:
-        print(f"❌ Error al actualizar estado del trade para {symbol} ({user_id}): {e}")
+        logger.error(f"❌ Error al actualizar estado del trade para {symbol} ({user_id}): {e}")
 
 
 

@@ -7,6 +7,9 @@ from app.utils.config.settings import (
     get_binance_api_secret_for_user
 )
 
+from app.utils.logger_config import get_logger
+logger = get_logger()
+
 def get_binance_client_for_user(user_id: str):
     """
     Crea un cliente de Binance para el usuario especificado.
@@ -36,8 +39,8 @@ def get_binance_client_for_user(user_id: str):
         client.API_URL = 'https://testnet.binancefuture.com'  # REST API
         client.FUTURES_URL = 'https://testnet.binancefuture.com'  # Futures REST API
 
-        print(f"⚠️ TESTNET MODE ENABLED para {user_id}")
-        print(f"   Usando: {client.FUTURES_URL}")
+        logger.warning(f"⚠️ TESTNET MODE ENABLED para {user_id}")
+        logger.warning(f"   Usando: {client.FUTURES_URL}")
     else:
         # Cliente de producción normal
         client = Client(api_key, api_secret)

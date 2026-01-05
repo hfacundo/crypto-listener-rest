@@ -6,6 +6,9 @@ from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone, timedelta
 import traceback
 
+from app.utils.logger_config import get_logger
+logger = get_logger()
+
 from app.utils.constants import (
     MAX_SPREAD, MAX_SPREAD_PCT, DEFAULT_MAX_LEVERAGE, DEFAULT_SPREAD_MULTIPLIER
 )
@@ -16,14 +19,14 @@ from app.utils.db.query_executor import get_category
 
 def get_dynamic_spread_limits(symbol: str, filters: dict, mark_price: float) -> dict:
     tick_size = float(filters["PRICE_FILTER"]["tickSize"])
-    print(f"datos de get_dynamic_spread_limits -> mark_price={mark_price}, tick_size={tick_size}")
+    logger.debug(f"📊 get_dynamic_spread_limits -> mark_price={mark_price}, tick_size={tick_size}")
 
     # Intentar usar valor configurable dinámicamente
     multiplier = get_dynamic_spread_multiplier(symbol)
 
     max_spread = tick_size * multiplier
     max_spread_pct = max_spread / mark_price
-    print(f"datos de get_dynamic_spread_limits -> multiplier={multiplier}, max_spread={max_spread}, max_spread_pct={max_spread_pct}")
+    logger.debug(f"📊 get_dynamic_spread_limits -> multiplier={multiplier}, max_spread={max_spread}, max_spread_pct={max_spread_pct}")
 
     return {
         MAX_SPREAD: max_spread,
@@ -60,7 +63,7 @@ def get_symbol_filters(symbol: str, client) -> dict:
         exchange_info = get_exchange_info_cached(client)
 
         if not exchange_info:
-            print(f"❌ Could not get exchange_info")
+            logger.error(f"❌ Could not get exchange_info")
             return {}
 
         for s in exchange_info["symbols"]:
@@ -70,11 +73,11 @@ def get_symbol_filters(symbol: str, client) -> dict:
                     f_dict[f["filterType"]] = f
                 return f_dict
 
-        print(f"⚠️ Symbol {symbol} not found in exchange info")
+        logger.warning(f"⚠️ Symbol {symbol} not found in exchange info")
         return {}
 
     except Exception as e:
-        print(f"❌ Error getting filters for {symbol}: {e}")
+        logger.error(f"❌ Error getting filters for {symbol}: {e}")
         traceback.print_exc()
         return {}
 
@@ -104,7 +107,7 @@ def get_mark_price(symbol: str, client) -> float:
         data = client.futures_mark_price(symbol=symbol)
         return float(data["markPrice"])
     except Exception as e:
-        print(f"❌ Error al obtener mark price para {symbol}: {e}")
+        logger.error(f"❌ Error al obtener mark price para {symbol}: {e}")
         return -1.0
 
 
@@ -119,11 +122,11 @@ def get_available_usdt_balance(client) -> float:
 
     for asset in balance_data:
         if asset.get("asset") == "USDT":
-            print(f"asset found: {asset}")
+            logger.debug(f"💰 asset found: {asset}")
             return float(asset.get("availableBalance", 0.0))
             # return float(asset.get("balance", 0.0)) # Para total balance
 
-    print("⚠️ USDT balance not found in futures account.")
+    logger.warning("⚠️ USDT balance not found in futures account.")
     return 0.0
 
 
@@ -178,7 +181,7 @@ def get_current_leverage(symbol: str, client) -> int:
                 return DEFAULT_MAX_LEVERAGE  # El valor máximo estándar para la mayoría de símbolos
 
     except Exception as e:
-        print(f"❌ Error al obtener el leverage permitido para {symbol}: {e}")
+        logger.error(f"❌ Error al obtener el leverage permitido para {symbol}: {e}")
 
     return -1
 
@@ -205,7 +208,7 @@ def get_max_allowed_leverage(symbol: str, client, user_id: str) -> int:
 
         return int(brackets[0]["brackets"][0]["initialLeverage"])
     except Exception as e:
-        print(f"❌ Error al obtener leverage máximo para {symbol} ({user_id}): {e}")
+        logger.error(f"❌ Error al obtener leverage máximo para {symbol} ({user_id}): {e}")
         return -1
     
 
@@ -223,27 +226,27 @@ def set_leverage(symbol: str, desired_leverage: int, client, user_id) -> tuple[b
     # 2) Límite real permitido por el exchange (puede ser < 20 en algunos símbolos)
     max_allowed = get_max_allowed_leverage(symbol, client, user_id)
     if desired_leverage > max_allowed:
-        print(f"⚠️ Ajustando leverage deseado ({desired_leverage}) al máximo permitido ({max_allowed}) para {symbol} ({user_id})")
+        logger.warning(f"⚠️ Ajustando leverage deseado ({desired_leverage}) al máximo permitido ({max_allowed}) para {symbol} ({user_id})")
         desired_leverage = max_allowed
 
     # 3) Validación de rango general (DEFAULT_MAX_LEVERAGE es tu techo absoluto global)
     if desired_leverage < 1 or desired_leverage > DEFAULT_MAX_LEVERAGE:
-        print(f"❌ Leverage inválido: {desired_leverage}. Debe estar entre 1 y {DEFAULT_MAX_LEVERAGE}.")
+        logger.error(f"❌ Leverage inválido: {desired_leverage}. Debe estar entre 1 y {DEFAULT_MAX_LEVERAGE}.")
         return False, 1
 
     # 4) Evitar llamada si ya está en el valor deseado
     current_leverage = get_current_leverage(symbol, client)
     if current_leverage == desired_leverage:
-        print(f"✅ Leverage actual ({current_leverage}x) ya es el deseado para {symbol} ({user_id})")
+        logger.info(f"✅ Leverage actual ({current_leverage}x) ya es el deseado para {symbol} ({user_id})")
         return True, desired_leverage
 
     # 5) Aplicar cambio
     try:
         client.futures_change_leverage(symbol=symbol, leverage=desired_leverage)
-        print(f"🔁 Leverage actualizado a {desired_leverage}x para {symbol} ({user_id})")
+        logger.info(f"🔁 Leverage actualizado a {desired_leverage}x para {symbol} ({user_id})")
         return True, desired_leverage
     except Exception as e:
-        print(f"❌ Error al cambiar leverage para {symbol}: {e}")
+        logger.error(f"❌ Error al cambiar leverage para {symbol}: {e}")
         return False, 1
 
 
@@ -273,7 +276,7 @@ def adjust_price_to_tick(price: float, tick_size: float) -> float:
 def is_trade_allowed_by_schedule_utc(rules: dict, now_utc: datetime = None) -> bool:
     schedule = rules.get("schedule")
     if not schedule:
-        print("🟢 Sin restricciones: permitido 24/7")
+        logger.debug("🟢 Sin restricciones: permitido 24/7")
         return True  # No hay restricciones, se permite operar 24/7
 
     try:
@@ -281,17 +284,17 @@ def is_trade_allowed_by_schedule_utc(rules: dict, now_utc: datetime = None) -> b
         if isinstance(schedule, str):
             schedule = json.loads(schedule)
         elif not isinstance(schedule, dict):
-            print(f"⚠️ Formato de schedule desconocido: {type(schedule)}")
+            logger.warning(f"⚠️ Formato de schedule desconocido: {type(schedule)}")
             return True  # Por seguridad, asumimos que se permite
     except Exception as e:
-        print(f"❌ Error al interpretar schedule: {e}")
+        logger.error(f"❌ Error al interpretar schedule: {e}")
         return True  # Por seguridad, asumimos que se permite
 
     current_day = now_utc.strftime("%A")  # Ej: "Monday"
     current_time = now_utc.time()
 
     if current_day not in schedule or not schedule[current_day]:
-        print(f"⛔ Operación rechazada: no permitido en {current_day}")
+        logger.warning(f"⛔ Operación rechazada: no permitido en {current_day}")
         return False
 
     for start_str, end_str in schedule[current_day]:
@@ -299,8 +302,8 @@ def is_trade_allowed_by_schedule_utc(rules: dict, now_utc: datetime = None) -> b
         end = datetime.strptime(end_str, "%H:%M").time()
 
         if start <= current_time <= end:
-            print(f"✅ Permitido: dentro del rango {start_str}-{end_str}")
+            logger.debug(f"✅ Permitido: dentro del rango {start_str}-{end_str}")
             return True  # Está dentro del horario permitido
 
-    print(f"⛔ Operación rechazada: fuera del horario permitido en {current_day} (UTC)")
+    logger.warning(f"⛔ Operación rechazada: fuera del horario permitido en {current_day} (UTC)")
     return False

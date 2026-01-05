@@ -7,9 +7,12 @@ This module provides resilient wrappers for Binance API calls with:
 - Proper error handling and logging
 """
 import time
+import logging
 import requests
 from typing import Dict, List, Optional, Any
 from contextvars import ContextVar
+
+_early_logger = logging.getLogger(__name__)
 
 try:
     from tenacity import (
@@ -22,7 +25,7 @@ try:
     TENACITY_AVAILABLE = True
 except ImportError:
     TENACITY_AVAILABLE = False
-    print("⚠️ Warning: tenacity not installed. Retry logic disabled. Install with: pip install tenacity")
+    _early_logger.warning("⚠️ tenacity not installed. Retry logic disabled. Install with: pip install tenacity")
 
 try:
     from binance.exceptions import BinanceAPIException

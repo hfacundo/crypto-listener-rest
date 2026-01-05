@@ -15,6 +15,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 import os
 
+from app.utils.logger_config import get_logger
+logger = get_logger()
+
 
 class TradeProtectionSystem:
     """
@@ -161,7 +164,7 @@ class TradeProtectionSystem:
             conn.commit()
             # print("✅ Trade protection tables initialized")
         except Exception as e:
-            print(f"⚠️ Error initializing tables: {e}")
+            logger.warning(f"⚠️ Error initializing tables: {e}")
             conn.rollback()
         finally:
             conn.close()
@@ -269,7 +272,7 @@ class TradeProtectionSystem:
                 return False, None
 
         except Exception as e:
-            print(f"⚠️ Error checking anti-repetition: {e}")
+            logger.warning(f"⚠️ Error checking anti-repetition: {e}")
             return False, None
         finally:
             conn.close()
@@ -337,7 +340,7 @@ class TradeProtectionSystem:
             conn.commit()
             return trade_id
         except Exception as e:
-            print(f"⚠️ Error recording trade: {e}")
+            logger.warning(f"⚠️ Error recording trade: {e}")
             conn.rollback()
             return -1
         finally:
@@ -404,7 +407,7 @@ class TradeProtectionSystem:
                 cur.execute(query_get_entry, (trade_id,))
                 result = cur.fetchone()
                 if not result:
-                    print(f"⚠️ Trade {trade_id} not found")
+                    logger.warning(f"⚠️ Trade {trade_id} not found")
                     return False
 
                 entry_price = float(result[0])
@@ -427,7 +430,7 @@ class TradeProtectionSystem:
             conn.commit()
             return True
         except Exception as e:
-            print(f"⚠️ Error updating trade exit: {e}")
+            logger.warning(f"⚠️ Error updating trade exit: {e}")
             conn.rollback()
             return False
         finally:
@@ -598,7 +601,7 @@ class TradeProtectionSystem:
                         """, (strategy_name,))
                         conn.commit()
 
-                        print(f"✅ CIRCUIT BREAKER RESET: {strategy_name} recovered to {cum_pnl:.2f}%")
+                        logger.info(f"✅ CIRCUIT BREAKER RESET: {strategy_name} recovered to {cum_pnl:.2f}%")
                         return False, None
                     else:
                         # Still blocked
@@ -614,7 +617,7 @@ class TradeProtectionSystem:
                 return False, None
 
         except Exception as e:
-            print(f"⚠️ Error checking circuit breaker: {e}")
+            logger.warning(f"⚠️ Error checking circuit breaker: {e}")
             return False, None
         finally:
             conn.close()
@@ -705,7 +708,7 @@ class TradeProtectionSystem:
                 }
 
         except Exception as e:
-            print(f"⚠️ Error getting symbol stats: {e}")
+            logger.warning(f"⚠️ Error getting symbol stats: {e}")
             return {'status': 'new', 'trades': 0, 'win_rate': 0, 'cumulative_pnl': 0, 'avg_pnl': 0}
         finally:
             conn.close()
@@ -789,9 +792,9 @@ class TradeProtectionSystem:
                     WHERE strategy_name = %s
                 """, (strategy_name,))
             conn.commit()
-            print(f"✅ Circuit breaker manually reset for {strategy_name}")
+            logger.info(f"✅ Circuit breaker manually reset for {strategy_name}")
         except Exception as e:
-            print(f"⚠️ Error resetting circuit breaker: {e}")
+            logger.warning(f"⚠️ Error resetting circuit breaker: {e}")
             conn.rollback()
         finally:
             conn.close()

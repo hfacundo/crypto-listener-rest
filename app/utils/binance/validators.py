@@ -3,6 +3,10 @@
 import time
 import traceback
 from decimal import Decimal
+from app.utils.logger_config import get_logger
+
+logger = get_logger()
+
 from app.utils.constants import (
     DEFAULT_RISK_PCT, RISK_PCT, MAX_SLIPPAGE_PCT, MAX_SLIPPAGE, MIN_RR,
     DEFAULT_MIN_RR, SELL, BUY, DEFAULT_ORDER_RETRIES, DEFAULT_DELAY
@@ -26,11 +30,11 @@ def calculate_risk_capital(rules, client):
         free_balance = get_available_usdt_balance(client)  # Ya es float
         risk_pct = float(rules.get(RISK_PCT, DEFAULT_RISK_PCT)) / 100
         capital_to_risk = free_balance * risk_pct
-        print(f"✅ Balance OK. Required: {capital_to_risk:.2f}, Available: {free_balance:.2f}")
+        logger.info(f"Balance OK. Required: {capital_to_risk:.2f}, Available: {free_balance:.2f}")
         return capital_to_risk
 
     except Exception as e:
-        print(f"❌ Error calculando capital a riesgo: {e}")
+        logger.error(f"Error calculando capital a riesgo: {e}")
         traceback.print_exc()
         return 0.0
 
@@ -40,7 +44,7 @@ def order_exists_for_symbol(symbol, client, user_id: str):
         open_orders = client.futures_get_open_orders(symbol=symbol)
         return len(open_orders) > 0
     except Exception as e:
-        print(f"❌ Error al consultar órdenes abiertas para {symbol} ({user_id}): {e}")
+        logger.error(f"Error al consultar órdenes abiertas para {symbol} ({user_id}): {e}")
         return False
 
 # 🔹 Valida si el símbolo tiene suficiente liquidez en el order book (profundidad mínima en USDT dentro de cierto margen de precio).
@@ -66,17 +70,17 @@ def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, cli
         bool: True si la liquidez es suficiente
     """
     if min_depth is None:
-        print("❌ Falta configuración: 'min_depth_base' en rules.")
+        logger.error("Falta configuración: 'min_depth_base' en rules.")
         return False
 
     if depth_pct is None:
-        print("❌ Falta configuración: 'depth_pct' en rules.")
+        logger.error("Falta configuración: 'depth_pct' en rules.")
         return False
 
     try:
         # Validar formato del orderbook
         if not isinstance(order_book, dict):
-            print(f"⚠️ Orderbook inválido (no es dict): {type(order_book)}")
+            logger.warning(f"Orderbook inválido (no es dict): {type(order_book)}")
             order_book = _fetch_orderbook_fallback(symbol, client)
             if not order_book:
                 return False
@@ -86,7 +90,7 @@ def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, cli
 
         # Validar que bids/asks sean listas y no estén vacías
         if not isinstance(bids, list) or not isinstance(asks, list):
-            print(f"⚠️ Orderbook con formato incorrecto - bids/asks no son listas")
+            logger.warning("Orderbook con formato incorrecto - bids/asks no son listas")
             order_book = _fetch_orderbook_fallback(symbol, client)
             if not order_book:
                 return False
@@ -94,7 +98,7 @@ def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, cli
             asks = order_book.get("asks", [])
 
         if len(bids) == 0 or len(asks) == 0:
-            print(f"⚠️ Orderbook vacío - bids: {len(bids)}, asks: {len(asks)}")
+            logger.warning(f"Orderbook vacío - bids: {len(bids)}, asks: {len(asks)}")
             order_book = _fetch_orderbook_fallback(symbol, client)
             if not order_book:
                 return False
@@ -105,7 +109,7 @@ def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, cli
         price_min = mark_price * (1 - depth_pct)
         price_max = mark_price * (1 + depth_pct)
 
-        print(f"📊 Validando liquidez {symbol}: range [{price_min:.4f} - {price_max:.4f}], bids={len(bids)}, asks={len(asks)}")
+        logger.debug(f"[{symbol}] Validando liquidez: range [{price_min:.4f} - {price_max:.4f}], bids={len(bids)}, asks={len(asks)}")
 
         # Calcular profundidad total dentro del rango en USDT
         def depth_sum(levels):
@@ -126,17 +130,17 @@ def validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, cli
         ask_depth = depth_sum(asks)
         total_depth = bid_depth + ask_depth
 
-        print(f"📊 Profundidad BID: {bid_depth:.2f} USDT, ASK: {ask_depth:.2f} USDT, TOTAL: {total_depth:.2f} USDT")
+        logger.debug(f"[{symbol}] Profundidad BID: {bid_depth:.2f} USDT, ASK: {ask_depth:.2f} USDT, TOTAL: {total_depth:.2f} USDT")
 
         if total_depth >= min_depth:
-            print(f"✅ Liquidez suficiente: {total_depth:.2f} USDT >= {min_depth:.2f} USDT")
+            logger.debug(f"[{symbol}] Liquidez suficiente: {total_depth:.2f} USDT >= {min_depth:.2f} USDT")
             return True
         else:
-            print(f"⚠️ Profundidad insuficiente: {total_depth:.2f} USDT (mínimo requerido: {min_depth:.2f} USDT)")
+            logger.warning(f"[{symbol}] Profundidad insuficiente: {total_depth:.2f} USDT (mínimo requerido: {min_depth:.2f} USDT)")
             return False
 
     except Exception as e:
-        print(f"❌ Error al validar liquidez para {symbol}: {e}")
+        logger.error(f"Error al validar liquidez para {symbol}: {e}")
         traceback.print_exc()
         return False
 
@@ -154,25 +158,25 @@ def _fetch_orderbook_fallback(symbol, client):
         dict: Orderbook o None si falla
     """
     if not client:
-        print(f"❌ No se puede hacer fallback a API - client no disponible")
+        logger.error("No se puede hacer fallback a API - client no disponible")
         return None
 
     try:
         # Usar depth limit granular optimizado (igual que crypto-analyzer-redis)
         depth_limit = _get_depth_limit_granular(symbol)
 
-        print(f"🔄 Fallback: Obteniendo orderbook fresh desde Binance API para {symbol} (depth={depth_limit})")
+        logger.debug(f"[{symbol}] Fallback: Obteniendo orderbook fresh desde Binance API (depth={depth_limit})")
         order_book = client.futures_order_book(symbol=symbol.upper(), limit=depth_limit)
 
         if order_book and "bids" in order_book and "asks" in order_book:
-            print(f"✅ Orderbook obtenido desde API - bids: {len(order_book['bids'])}, asks: {len(order_book['asks'])}, depth={depth_limit}")
+            logger.debug(f"[{symbol}] Orderbook obtenido desde API - bids: {len(order_book['bids'])}, asks: {len(order_book['asks'])}, depth={depth_limit}")
             return order_book
         else:
-            print(f"❌ Orderbook desde API inválido")
+            logger.error(f"[{symbol}] Orderbook desde API inválido")
             return None
 
     except Exception as e:
-        print(f"❌ Error en fallback API para orderbook {symbol}: {e}")
+        logger.error(f"Error en fallback API para orderbook {symbol}: {e}")
         return None
 
 
@@ -235,17 +239,17 @@ def validate_spread(symbol: str, entry_price: float, filters: dict, order_book: 
         # Calcular spread absoluto desde spread_pct para validar ambos límites
         spread_abs = entry_price * spread_pct
 
-        print(f"📊 Spread optimizado (pre-calculado): {spread_pct*100:.4f}%, abs: {spread_abs:.6f}")
+        logger.debug(f"[{symbol}] Spread optimizado (pre-calculado): {spread_pct*100:.4f}%, abs: {spread_abs:.6f}")
 
         if spread_abs > limits["max_spread"]:
-            print(f"❌ Spread absoluto ({spread_abs:.6f}) excede el máximo permitido ({limits['max_spread']})")
+            logger.warning(f"[{symbol}] Spread absoluto ({spread_abs:.6f}) excede el máximo permitido ({limits['max_spread']})")
             return False
 
         if spread_pct > limits["max_spread_pct"]:
-            print(f"❌ Spread relativo ({spread_pct:.6f}) excede el máximo permitido ({limits['max_spread_pct']:.6f})")
+            logger.warning(f"[{symbol}] Spread relativo ({spread_pct:.6f}) excede el máximo permitido ({limits['max_spread_pct']:.6f})")
             return False
 
-        print(f"✅ Spread aceptable (cache hit)")
+        logger.debug(f"[{symbol}] Spread aceptable (cache hit)")
         return True
 
     # Fallback: Cálculo manual tradicional
@@ -261,14 +265,14 @@ def validate_spread(symbol: str, entry_price: float, filters: dict, order_book: 
 
     limits = get_dynamic_spread_limits(symbol, filters, mark_price)
 
-    print(f"📊 Spread manual: {spread_pct*100:.4f}%, abs: {spread:.6f}")
+    logger.debug(f"[{symbol}] Spread manual: {spread_pct*100:.4f}%, abs: {spread:.6f}")
 
     if spread > limits["max_spread"]:
-        print(f"❌ Spread absoluto ({spread}) excede el máximo permitido ({limits['max_spread']})")
+        logger.warning(f"[{symbol}] Spread absoluto ({spread}) excede el máximo permitido ({limits['max_spread']})")
         return False
 
     if spread_pct > limits["max_spread_pct"]:
-        print(f"❌ Spread relativo ({spread_pct:.6f}) excede el máximo permitido ({limits['max_spread_pct']:.6f})")
+        logger.warning(f"[{symbol}] Spread relativo ({spread_pct:.6f}) excede el máximo permitido ({limits['max_spread_pct']:.6f})")
         return False
 
     return True
@@ -288,15 +292,15 @@ def validate_slippage(symbol: str, entry_price: float, order_book: dict) -> bool
         max_slippage = limits.get(MAX_SLIPPAGE)
         max_slippage_pct = limits.get(MAX_SLIPPAGE_PCT)
 
-        print(f"🧪 Validación de slippage optimizada (pre-calculado) para {symbol}")
-        print(f"📈 Entry: {entry_price:.6f}, Slippage: {slippage_abs:.6f} ({slippage_pct_precalc*100:.4f}%)")
-        print(f"🎯 Máx slippage: abs={max_slippage:.6f}, pct={max_slippage_pct:.6f}")
+        logger.debug(f"[{symbol}] Validación de slippage optimizada (pre-calculado)")
+        logger.debug(f"[{symbol}] Entry: {entry_price:.6f}, Slippage: {slippage_abs:.6f} ({slippage_pct_precalc*100:.4f}%)")
+        logger.debug(f"[{symbol}] Máx slippage: abs={max_slippage:.6f}, pct={max_slippage_pct:.6f}")
 
         if slippage_abs > max_slippage or slippage_pct_precalc > max_slippage_pct:
-            print(f"❌ Slippage demasiado alto para {symbol} (cache hit)")
+            logger.warning(f"[{symbol}] Slippage demasiado alto (cache hit)")
             return False
 
-        print(f"✅ Slippage aceptable para {symbol} (cache hit)")
+        logger.debug(f"[{symbol}] Slippage aceptable (cache hit)")
         return True
 
     # Fallback: Cálculo manual tradicional
@@ -305,14 +309,14 @@ def validate_slippage(symbol: str, entry_price: float, order_book: dict) -> bool
         "asks": order_book["asks"][:5]
     }
     if not book:
-        print(f"❌ Orderbook no disponible para {symbol}")
+        logger.error(f"[{symbol}] Orderbook no disponible")
         return False
 
     best_ask = float(book["asks"][0][0]) if book["asks"] else None
     best_bid = float(book["bids"][0][0]) if book["bids"] else None
 
     if not best_ask or not best_bid:
-        print(f"❌ Orderbook incompleto para {symbol} (ask: {best_ask}, bid: {best_bid})")
+        logger.error(f"[{symbol}] Orderbook incompleto (ask: {best_ask}, bid: {best_bid})")
         return False
 
     mark_price = (best_ask + best_bid) / 2
@@ -322,15 +326,15 @@ def validate_slippage(symbol: str, entry_price: float, order_book: dict) -> bool
     max_slippage = limits.get(MAX_SLIPPAGE)
     max_slippage_pct = limits.get(MAX_SLIPPAGE_PCT)
 
-    print(f"🧪 Validación de slippage manual para {symbol}")
-    print(f"📈 Entry: {entry_price:.6f}, Mark: {mark_price:.6f}, Slippage: {slippage:.6f}")
-    print(f"🎯 Máx slippage: abs={max_slippage:.6f}, pct={max_slippage_pct:.6f} ({entry_price * max_slippage_pct:.6f})")
+    logger.debug(f"[{symbol}] Validación de slippage manual")
+    logger.debug(f"[{symbol}] Entry: {entry_price:.6f}, Mark: {mark_price:.6f}, Slippage: {slippage:.6f}")
+    logger.debug(f"[{symbol}] Máx slippage: abs={max_slippage:.6f}, pct={max_slippage_pct:.6f} ({entry_price * max_slippage_pct:.6f})")
 
     if slippage > max_slippage or slippage > entry_price * max_slippage_pct:
-        print(f"❌ Slippage demasiado alto para {symbol}")
+        logger.warning(f"[{symbol}] Slippage demasiado alto")
         return False
 
-    print(f"✅ Slippage aceptable para {symbol}")
+    logger.debug(f"[{symbol}] Slippage aceptable")
     return True
 
 
@@ -398,17 +402,17 @@ def adjust_prices_by_slippage(entry_price, stop_loss, target_price, symbol, filt
         actual_tp_distance = abs(tp_adj - entry_adj)
         actual_rr = actual_tp_distance / actual_sl_distance if actual_sl_distance > 0 else 0
 
-        print(f"🔁 Ajuste de precios para {symbol} [{direction}]")
-        print(f"📥 Request:  entry={entry_price:.4f}, SL={stop_loss:.4f}, TP={target_price:.4f}, RR={original_rr if original_rr else 'N/A'}")
-        print(f"📍 Mark actual: {mark_price:.4f}")
-        print(f"📤 Ajustado: entry={entry_adj:.4f}, SL={sl_adj:.4f}, TP={tp_adj:.4f}")
-        print(f"⚖️  RR después de ajuste: {actual_rr:.2f}")
-        print(f"📏 Distancias: SL={actual_sl_distance:.4f}, TP={actual_tp_distance:.4f}")
+        logger.debug(f"[{symbol}] Ajuste de precios [{direction}]")
+        logger.debug(f"[{symbol}] Request: entry={entry_price:.4f}, SL={stop_loss:.4f}, TP={target_price:.4f}, RR={original_rr if original_rr else 'N/A'}")
+        logger.debug(f"[{symbol}] Mark actual: {mark_price:.4f}")
+        logger.debug(f"[{symbol}] Ajustado: entry={entry_adj:.4f}, SL={sl_adj:.4f}, TP={tp_adj:.4f}")
+        logger.debug(f"[{symbol}] RR después de ajuste: {actual_rr:.2f}")
+        logger.debug(f"[{symbol}] Distancias: SL={actual_sl_distance:.4f}, TP={actual_tp_distance:.4f}")
 
         return entry_adj, sl_adj, tp_adj
 
     except Exception as e:
-        print(f"❌ Error ajustando precios por slippage: {e}")
+        logger.error(f"[{symbol}] Error ajustando precios por slippage: {e}")
         return entry_price, stop_loss, target_price
 
 
@@ -427,10 +431,10 @@ def validate_min_rr_again(rr: float, probability: float, rules: dict) -> bool:
     min_rr = float(rules.get(MIN_RR, DEFAULT_MIN_RR))
 
     if rr < min_rr:
-        print(f"❌ RR={rr:.2f} is below min_rr={min_rr}")
+        logger.warning(f"RR={rr:.2f} is below min_rr={min_rr}")
         return False
 
-    print(f"✅ RR={rr:.2f} passed validation")
+    logger.debug(f"RR={rr:.2f} passed validation")
     return True
 
 def validate_balance(capital_to_risk: float, client) -> bool:
@@ -446,10 +450,10 @@ def validate_balance(capital_to_risk: float, client) -> bool:
     available_balance = get_available_usdt_balance(client)
     
     if capital_to_risk > available_balance:
-        print(f"❌ Insufficient balance. Required: {capital_to_risk:.2f}, Available: {available_balance:.2f}")
+        logger.warning(f"Insufficient balance. Required: {capital_to_risk:.2f}, Available: {available_balance:.2f}")
         return False
 
-    print(f"✅ Balance OK. Required: {capital_to_risk:.2f}, Available: {available_balance:.2f}")
+    logger.info(f"Balance OK. Required: {capital_to_risk:.2f}, Available: {available_balance:.2f}")
     return True
 
 
@@ -469,7 +473,7 @@ def validate_symbol_filters(filters: dict, symbol: str) -> bool:
     
     for ftype in required_filters:
         if ftype not in filters:
-            print(f"❌ Falta el filtro '{ftype}' para {symbol}")
+            logger.error(f"[{symbol}] Falta el filtro '{ftype}'")
             return False
 
     # Validar campos clave dentro de cada filtro
@@ -479,22 +483,22 @@ def validate_symbol_filters(filters: dict, symbol: str) -> bool:
         min_notional = filters["MIN_NOTIONAL"]
 
         if float(lot_size["minQty"]) <= 0:
-            print(f"❌ minQty inválido para {symbol}")
+            logger.error(f"[{symbol}] minQty inválido")
             return False
         if float(lot_size["stepSize"]) <= 0:
-            print(f"❌ stepSize inválido para {symbol}")
+            logger.error(f"[{symbol}] stepSize inválido")
             return False
         if float(price_filter["tickSize"]) <= 0:
-            print(f"❌ tickSize inválido para {symbol}")
+            logger.error(f"[{symbol}] tickSize inválido")
             return False
         if float(min_notional.get("notional", 0)) <= 0:
-            print(f"❌ notional mínimo inválido para {symbol}")
+            logger.error(f"[{symbol}] notional mínimo inválido")
             return False
 
         return True
 
     except Exception as e:
-        print(f"❌ Error al validar filtros de {symbol}: {e}")
+        logger.error(f"[{symbol}] Error al validar filtros: {e}")
         return False
 
 def calculate_quantity(entry_price: float, stop_loss: float, rules: dict, client, capital_to_risk: float = None) -> float:
@@ -514,7 +518,7 @@ def calculate_quantity(entry_price: float, stop_loss: float, rules: dict, client
     if capital_to_risk is None:
         capital_to_risk = calculate_risk_capital(rules, client)
     if capital_to_risk <= 0:
-        print("❌ Capital a riesgo inválido.")
+        logger.error("Capital a riesgo inválido.")
         return 0.0
 
     entry = Decimal(str(entry_price))
@@ -524,7 +528,7 @@ def calculate_quantity(entry_price: float, stop_loss: float, rules: dict, client
     distance = abs(entry - stop)
 
     if distance <= 0:
-        print("❌ Distancia entre entry y stop inválida.")
+        logger.error("Distancia entre entry y stop inválida.")
         return 0.0
 
     # qty = capital / distancia al SL
@@ -555,24 +559,24 @@ def validate_quantity(qty: float, entry_price: float, filters: dict) -> bool:
 
         # Valida cantidad mínima
         if qty_dec < min_qty:
-            print(f"❌ qty {qty} es menor que minQty {min_qty}")
+            logger.warning(f"qty {qty} es menor que minQty {min_qty}")
             return False
 
         # Valida múltiplo exacto de stepSize
         rounded_qty = (qty_dec // step_size) * step_size
         if rounded_qty != qty_dec:
-            print(f"❌ qty {qty} no es múltiplo exacto de stepSize {step_size}")
+            logger.warning(f"qty {qty} no es múltiplo exacto de stepSize {step_size}")
             return False
 
         # Valida notional mínimo (qty * precio)
         if notional < notional_min:
-            print(f"❌ Notional {notional:.4f} menor que mínimo {notional_min}")
+            logger.warning(f"Notional {notional:.4f} menor que mínimo {notional_min}")
             return False
 
         return True
 
     except Exception as e:
-        print(f"❌ Error validando qty: {e}")
+        logger.error(f"Error validando qty: {e}")
         return False
 
 def validate_price_filters(stop_loss: float, target_price: float, filters: dict) -> bool:
@@ -599,18 +603,18 @@ def validate_price_filters(stop_loss: float, target_price: float, filters: dict)
             # Valida múltiplo de tickSize
             rounded_price = (price_dec // tick_size) * tick_size
             if rounded_price != price_dec:
-                print(f"❌ {label}={price} no es múltiplo exacto de tickSize={tick_size}")
+                logger.warning(f"{label}={price} no es múltiplo exacto de tickSize={tick_size}")
                 return False
 
             # Valida rango permitido
             if price_dec < min_price or price_dec > max_price:
-                print(f"❌ {label}={price} fuera de rango permitido ({min_price} - {max_price})")
+                logger.warning(f"{label}={price} fuera de rango permitido ({min_price} - {max_price})")
                 return False
 
         return True
 
     except Exception as e:
-        print(f"❌ Error validando precios SL/TP: {e}")
+        logger.error(f"Error validando precios SL/TP: {e}")
         return False
 
 def create_market_order(symbol: str, direction: str, quantity: float, retries: int = 3, delay: int = 2, client=None, user_id: str = None) -> dict:
@@ -637,19 +641,19 @@ def create_market_order(symbol: str, direction: str, quantity: float, retries: i
                 quantity=quantity
             )
 
-            print(f"✅ Orden MARKET ejecutada: {direction} {quantity} {symbol} ({user_id})")
+            logger.info(f"[{symbol}] Orden MARKET ejecutada: {direction} {quantity} ({user_id})")
             return {
                 "success": True,
                 "order": response
             }
 
         except Exception as e:
-            print(f"❌ Intento {attempt} fallido para {symbol} ({user_id}): {e}")
+            logger.warning(f"[{symbol}] Intento {attempt} fallido ({user_id}): {e}")
             if attempt < retries:
-                print(f"⏳ Reintentando en {delay} segundos...")
+                logger.debug(f"[{symbol}] Reintentando en {delay} segundos...")
                 time.sleep(delay)
             else:
-                print(f"❌ Todos los intentos fallaron para {symbol}.")
+                logger.error(f"[{symbol}] Todos los intentos fallaron.")
 
     return {
         "success": False,
@@ -695,10 +699,10 @@ def create_stop_loss_order(symbol: str, direction: str, stop_price: float, clien
 
         # Hacer llamada directa al endpoint de Algo Orders
         result = client._request_futures_api('post', 'algoOrder', signed=True, data=params)
-        print(f"✅ Orden STOP_MARKET ({working_type}) creada via Algo API: {direction} {symbol} ({user_id}) @ {stop_price}")
+        logger.info(f"[{symbol}] Orden STOP_MARKET ({working_type}) creada via Algo API: {direction} ({user_id}) @ {stop_price}")
         return result
     except Exception as e:
-        print(f"❌ Error al crear STOP_MARKET para {symbol} ({user_id}): {e}")
+        logger.error(f"[{symbol}] Error al crear STOP_MARKET ({user_id}): {e}")
         traceback.print_exc()
         return None
 
@@ -734,10 +738,10 @@ def create_take_profit_order(symbol: str, direction: str, stop_price: float, cli
 
         # Hacer llamada directa al endpoint de Algo Orders
         response = client._request_futures_api('post', 'algoOrder', signed=True, data=params)
-        print(f"✅ Orden TAKE_PROFIT_MARKET ({user_id}) (closePosition=True) creada via Algo API: {direction} {symbol} @ {stop_price}")
+        logger.info(f"[{symbol}] Orden TAKE_PROFIT_MARKET creada via Algo API: {direction} ({user_id}) @ {stop_price}")
         return response
     except Exception as e:
-        print(f"❌ Error al crear orden TAKE_PROFIT para {symbol} ({user_id}): {e}")
+        logger.error(f"[{symbol}] Error al crear orden TAKE_PROFIT ({user_id}): {e}")
         traceback.print_exc()
         return None
 
@@ -758,20 +762,19 @@ def create_safe_trade_with_sl_tp(
     Si alguna orden SL o TP falla, cancela la entrada para evitar quedar expuesto.
     """
 
-    print(f"\n🚀 Iniciando create_safe_trade_with_sl_tp para {symbol} ({user_id})")
-    print(f"📊 Entry: {entry_price}, SL: {stop_loss}, TP: {target_price}, RR: {rr}, Dir: {direction}")
-    print(f"📋 Rules: {rules}")
+    logger.info(f"[{symbol}] Iniciando create_safe_trade_with_sl_tp ({user_id})")
+    logger.debug(f"[{symbol}] Entry: {entry_price}, SL: {stop_loss}, TP: {target_price}, RR: {rr}, Dir: {direction}")
+    logger.debug(f"[{symbol}] Rules: {rules}")
 
     # Paso 1: Crear orden MARKET
     # symbol: str, direction: str, quantity: float, retries: int = 3, delay: int = 2
     retries = DEFAULT_ORDER_RETRIES
     delay = DEFAULT_DELAY
     result = create_market_order(symbol=symbol, direction=direction, quantity=quantity, retries=retries, delay=delay, client=client, user_id=user_id)
-    print(f"📤 Resultado MARKET ({user_id}):")
-    print(result)
+    logger.debug(f"[{symbol}] Resultado MARKET ({user_id}): {result}")
 
     if not result.get("success"):
-        print(f"❌ Error al crear orden MARKET ({user_id}).")
+        logger.error(f"[{symbol}] Error al crear orden MARKET ({user_id}).")
         return {
             "success": False,
             "step": "MARKET_ORDER",
@@ -780,18 +783,18 @@ def create_safe_trade_with_sl_tp(
 
     order_data = result["order"]
     order_id = order_data.get("orderId")
-    print(f"⏳ Esperando que orden {order_id} esté FILLED...")
+    logger.debug(f"[{symbol}] Esperando que orden {order_id} esté FILLED...")
 
     try:
         for i in range(retries):
             order_status = client.futures_get_order(symbol=symbol, orderId=order_id)
-            print(f"🔍 Intento {i+1}/{retries}: Estado actual = {order_status.get('status')}")
+            logger.debug(f"[{symbol}] Intento {i+1}/{retries}: Estado actual = {order_status.get('status')}")
             if order_status.get("status") == "FILLED":
-                print(f"✅ Orden MARKET ejecutada:\n{order_status}")
+                logger.info(f"[{symbol}] Orden MARKET ejecutada: {order_status}")
                 break
             time.sleep(1)
         else:
-            print("⚠️ Timeout esperando ejecución de orden MARKET.")
+            logger.warning(f"[{symbol}] Timeout esperando ejecución de orden MARKET.")
             return {
                 "success": False,
                 "step": "WAIT_MARKET_FILL",
@@ -800,13 +803,12 @@ def create_safe_trade_with_sl_tp(
 
         # Paso 2: Crear Stop Loss
         sl_direction = SELL if direction == BUY else BUY
-        print(f"📉 Intentando crear STOP LOSS ({user_id}) en {stop_loss} ({sl_direction})")
+        logger.debug(f"[{symbol}] Intentando crear STOP LOSS ({user_id}) en {stop_loss} ({sl_direction})")
         sl_result = create_stop_loss_order(symbol, sl_direction, stop_loss, client, user_id)
-        print(f"🛑 Resultado SL ({user_id}):")
-        print(sl_result)
+        logger.debug(f"[{symbol}] Resultado SL ({user_id}): {sl_result}")
 
         if not sl_result:
-            print(f"❌ SL falló. Cancelando orden original {order_id}")
+            logger.error(f"[{symbol}] SL falló. Cancelando orden original {order_id}")
             client.futures_cancel_order(symbol=symbol, orderId=order_id)
             return {
                 "success": False,
@@ -816,13 +818,12 @@ def create_safe_trade_with_sl_tp(
             }
 
         # Paso 3: Crear Take Profit
-        print(f"🎯 Intentando crear TAKE PROFIT en {target_price} ({sl_direction})")
+        logger.debug(f"[{symbol}] Intentando crear TAKE PROFIT en {target_price} ({sl_direction})")
         tp_result = create_take_profit_order(symbol, sl_direction, target_price, client, user_id)
-        print(f"🎯 Resultado TP ({user_id}):")
-        print(tp_result)
+        logger.debug(f"[{symbol}] Resultado TP ({user_id}): {tp_result}")
 
         if not tp_result:
-            print(f"❌ TP falló. Cancelando orden original {order_id} ({user_id})")
+            logger.error(f"[{symbol}] TP falló. Cancelando orden original {order_id} ({user_id})")
             client.futures_cancel_order(symbol=symbol, orderId=order_id)
             return {
                 "success": False,
@@ -834,7 +835,7 @@ def create_safe_trade_with_sl_tp(
         # ✅ NUEVO: Manejar respuesta del Algo Order API (usa 'algoId' en lugar de 'orderId')
         sl_order_id = sl_result.get("algoId") or sl_result.get("orderId") if sl_result else None
         tp_order_id = tp_result.get("algoId") or tp_result.get("orderId") if tp_result else None
-        print("✅ Operación completada con SL y TP creados.")
+        logger.info(f"[{symbol}] Operación completada con SL y TP creados ({user_id})")
         return {
             "success": True,
             "step": "ALL_OK",
@@ -848,7 +849,7 @@ def create_safe_trade_with_sl_tp(
         }
 
     except Exception as e:
-        print(f"❌ Excepción inesperada: {e}")
+        logger.error(f"[{symbol}] Excepción inesperada: {e}")
         return {
             "success": False,
             "step": "EXCEPTION",
@@ -865,7 +866,7 @@ def cancel_orphan_orders(symbol: str, client, user_id: str):
     """
     order_id = get_latest_order_id_for_symbol(symbol, user_id)
     if not order_id:
-        print(f"⚠️ No se encontró order_id reciente en BD para {symbol}")
+        logger.warning(f"[{symbol}] No se encontró order_id reciente en BD")
         return
 
     cancel_orphan_orders_if_position_closed(symbol, client, user_id)
@@ -884,7 +885,7 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
         # Verificar si hay posición activa
         positions = client.futures_position_information(symbol=symbol)
         if not positions or float(positions[0]["positionAmt"]) == 0.0:
-            print(f"🔍 Sin posición activa para {symbol}, revisando órdenes abiertas...")
+            logger.debug(f"[{symbol}] Sin posición activa, revisando órdenes abiertas...")
 
             # 1️⃣ Obtener órdenes tradicionales (endpoint antiguo)
             open_orders = client.futures_get_open_orders(symbol=symbol)
@@ -900,13 +901,13 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
                 elif isinstance(algo_response, list):
                     algo_orders = algo_response
             except Exception as e:
-                print(f"⚠️ No se pudieron obtener Algo Orders para {symbol}: {e}")
+                logger.warning(f"[{symbol}] No se pudieron obtener Algo Orders: {e}")
 
             # Combinar ambas listas
             total_orders = len(open_orders) + len(algo_orders)
 
             if total_orders == 0:
-                print(f"❔ No hay órdenes abiertas para {symbol}, posible cierre manual.")
+                logger.debug(f"[{symbol}] No hay órdenes abiertas, posible cierre manual.")
                 # Confirmamos que había order_id en BD antes de esta llamada
                 update_trade_status(symbol, user_id, status="close_manual")
                 return
@@ -914,7 +915,7 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
             # 3️⃣ Cancelar órdenes tradicionales
             for order in open_orders:
                 if order["type"] in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]:
-                    print(f"🧹 Cancelando orden huérfana tradicional {order['type']} (ID: {order['orderId']}) de {user_id}")
+                    logger.info(f"[{symbol}] Cancelando orden huérfana tradicional {order['type']} (ID: {order['orderId']}) de {user_id}")
                     client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
 
                     # Actualizar status del trade
@@ -929,7 +930,7 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
                 algo_id = algo_order.get("algoId")
 
                 if algo_id and order_type in ["STOP_MARKET", "TAKE_PROFIT_MARKET", "STOP", "TAKE_PROFIT"]:
-                    print(f"🧹 Cancelando Algo Order huérfana {order_type} (algoId: {algo_id}) de {user_id}")
+                    logger.info(f"[{symbol}] Cancelando Algo Order huérfana {order_type} (algoId: {algo_id}) de {user_id}")
                     try:
                         client._request_futures_api('delete', 'algoOrder', signed=True, data={"symbol": symbol, "algoId": algo_id})
 
@@ -939,13 +940,13 @@ def cancel_orphan_orders_if_position_closed(symbol: str, client, user_id: str):
                         elif order_type in ["TAKE_PROFIT_MARKET", "TAKE_PROFIT"]:
                             update_trade_status(symbol, user_id, status="fail")
                     except Exception as e:
-                        print(f"⚠️ Error cancelando Algo Order {algo_id}: {e}")
+                        logger.warning(f"[{symbol}] Error cancelando Algo Order {algo_id}: {e}")
 
         else:
-            print(f"✅ Posición activa detectada para {symbol} ({user_id}), no se cancelan órdenes.")
+            logger.debug(f"[{symbol}] Posición activa detectada ({user_id}), no se cancelan órdenes.")
 
     except Exception as e:
-        print(f"❌ Error al cancelar órdenes huérfanas para {symbol} ({user_id}): {e}")
+        logger.error(f"[{symbol}] Error al cancelar órdenes huérfanas ({user_id}): {e}")
         traceback.print_exc()
 
 

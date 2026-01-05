@@ -266,55 +266,55 @@ class SQSEvaluator:
         symbol = self._current_symbol or 'TRADE'
 
         # Header
-        print(f"\n{'='*80}")
-        print(f"🎯 SQS TRADE EVALUATION: {symbol}")
+        logger.info(f"{'='*80}")
+        logger.info(f"🎯 SQS TRADE EVALUATION: {symbol}")
         if tier is not None:
             tier_emoji = "✅" if tier <= 9 else "❌"
-            print(f"   {tier_emoji} crypto-analyzer-redis TIER: {tier}")
-        print(f"{'='*80}")
+            logger.info(f"   {tier_emoji} crypto-analyzer-redis TIER: {tier}")
+        logger.info(f"{'='*80}")
 
         # Input data
         sqs_grade = self._interpret_sqs_grade(sqs)
         prob_tier = "RARE" if probability >= 63 else "GOOD" if probability >= 60 else "STANDARD"
 
-        print(f"📊 INPUT DATA:")
-        print(f"   📈 Probability: {probability:.1f}% ({prob_tier})")
-        print(f"   🔍 SQS: {sqs:.1f}/100 ({sqs_grade})")
-        print(f"   ⚖️  RR Ratio: {rr_ratio:.2f}")
+        logger.info(f"📊 INPUT DATA:")
+        logger.info(f"   📈 Probability: {probability:.1f}% ({prob_tier})")
+        logger.info(f"   🔍 SQS: {sqs:.1f}/100 ({sqs_grade})")
+        logger.info(f"   ⚖️  RR Ratio: {rr_ratio:.2f}")
 
         # Decision
         action = decision['action'].upper()
         multiplier = decision['capital_multiplier']
 
         if action == 'REJECT':
-            print(f"\n❌ DECISION: {action}")
-            print(f"   🚫 Capital: 0.0x (TRADE BLOCKED)")
-            print(f"   📝 Reason: {decision['reason']}")
+            logger.warning(f"❌ DECISION: {action}")
+            logger.warning(f"   🚫 Capital: 0.0x (TRADE BLOCKED)")
+            logger.warning(f"   📝 Reason: {decision['reason']}")
         else:
             # Determine scenario type based on prob/sqs combination
             scenario = self._determine_scenario_type(probability, sqs, multiplier)
 
-            print(f"\n✅ DECISION: {action}")
-            print(f"   💰 Capital Multiplier: {multiplier:.1f}x")
-            print(f"   🏆 Quality Grade: {decision['quality_grade']}")
-            print(f"   📊 Frequency Class: {decision['frequency_class']}")
-            print(f"   🎲 Scenario Type: {scenario}")
-            print(f"   📝 Rule Matched: {decision.get('tier_matched', 'Default')}")
+            logger.info(f"✅ DECISION: {action}")
+            logger.info(f"   💰 Capital Multiplier: {multiplier:.1f}x")
+            logger.info(f"   🏆 Quality Grade: {decision['quality_grade']}")
+            logger.info(f"   📊 Frequency Class: {decision['frequency_class']}")
+            logger.info(f"   🎲 Scenario Type: {scenario}")
+            logger.info(f"   📝 Rule Matched: {decision.get('tier_matched', 'Default')}")
 
             # Show bonuses if any
             if decision.get('bonuses_applied', False):
-                print(f"   🎁 Special Bonuses: APPLIED")
+                logger.info(f"   🎁 Special Bonuses: APPLIED")
 
         # Footer with summary
-        print(f"{'='*80}")
+        logger.info(f"{'='*80}")
         if action == 'ACCEPT':
             capital_emoji = "🚀" if multiplier >= 2.0 else "📈" if multiplier >= 1.5 else "💰"
             tier_info = f" (TIER {tier})" if tier is not None else ""
-            print(f"{capital_emoji} SUMMARY: {prob_tier} probability + {sqs_grade} SQS → {multiplier:.1f}x capital{tier_info}")
+            logger.info(f"{capital_emoji} SUMMARY: {prob_tier} probability + {sqs_grade} SQS → {multiplier:.1f}x capital{tier_info}")
         else:
             tier_info = f" (TIER {tier})" if tier is not None else ""
-            print(f"🛑 SUMMARY: Trade rejected - insufficient quality{tier_info}")
-        print(f"{'='*80}\n")
+            logger.warning(f"🛑 SUMMARY: Trade rejected - insufficient quality{tier_info}")
+        logger.info(f"{'='*80}")
 
     def _determine_scenario_type(self, probability: float, sqs: float, multiplier: float) -> str:
         """Determine the scenario type based on prob/sqs combination"""

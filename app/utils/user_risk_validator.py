@@ -35,8 +35,11 @@ from app.utils.binance.utils import is_trade_allowed_by_schedule_utc
 try:
     from app.utils.trade_protection import TradeProtectionSystem
 except ImportError as e:
-    print(f"⚠️ Warning: Could not import TradeProtectionSystem: {e}")
-    print(f"⚠️ Anti-repetition, circuit breaker, and symbol blacklist features will be disabled")
+    # Will use logger after it's initialized
+    import logging
+    _early_logger = logging.getLogger(__name__)
+    _early_logger.warning(f"⚠️ Could not import TradeProtectionSystem: {e}")
+    _early_logger.warning(f"⚠️ Anti-repetition, circuit breaker, and symbol blacklist features will be disabled")
     TradeProtectionSystem = None
 
 logger = logging.getLogger(__name__)

@@ -1,8 +1,12 @@
 # app/utils/binance/futures.py
 import sys
 import os
+import time
 from decimal import Decimal
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from app.utils.logger_config import get_logger
+logger = get_logger()
 
 from app.utils.binance.validators import (
     validate_liquidity,
@@ -33,7 +37,7 @@ try:
     from app.utils.trade_protection import TradeProtectionSystem
 except ImportError:
     TradeProtectionSystem = None
-    print("⚠️ TradeProtectionSystem not available")
+    logger.warning("TradeProtectionSystem not available")
 from app.utils.binance.utils import (
     set_leverage,
     get_symbol_filters,
@@ -54,37 +58,37 @@ from app.utils.binance.utils import adjust_price_to_tick
 def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules, client, user_id, capital_to_risk=None, leverage_override=None):
     #1. Obtener y validar filtros de Binance (LOT_SIZE, PRICE_FILTER, etc.)
     filters = get_symbol_filters(symbol, client)
-    print(f"{symbol} filters:", filters)
+    logger.debug(f"[{symbol}] filters: {filters}")
     if not validate_symbol_filters(filters, symbol):
-        print(f"❌ Filtros inválidos para {symbol} ({user_id})")
+        logger.error(f"[{symbol}] Filtros inválidos ({user_id})")
         return {"success": False, "error": "Invalid symbol filters"}
 
     # 2. Ajustar dinámicamente profundidad mínima y profundidad relativa
     # Obtener orderbook DIRECTO desde Binance API (sin cache Redis)
     order_book = client.futures_order_book(symbol=symbol, limit=100)
-    print(f"📘 Orderbook obtenido desde API: bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
+    logger.debug(f"[{symbol}] Orderbook obtenido desde API: bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
 
     # Obtener mark_price con cache (la función get_mark_price en utils.py ya usa cache)
     mark_price = get_mark_price(symbol, client)
-    
+
     depth_config = adjust_base_depth_and_depth_pct_for_symbol(symbol, client, order_book, mark_price)
     min_depth = depth_config[MIN_DEPTH_BASE]
     depth_pct = depth_config[DEPTH_PCT]
-    print(f"depth_config - min_depth {min_depth}, depth_pct {depth_pct}")
+    logger.debug(f"[{symbol}] depth_config - min_depth {min_depth}, depth_pct {depth_pct}")
 
     # 3. Validar liquidez (profundidad mínima)
     if not validate_liquidity(symbol, min_depth, depth_pct, order_book, mark_price, client):
-        print(f"❌ Liquidez insuficiente para {symbol} ({user_id})")
+        logger.warning(f"[{symbol}] Liquidez insuficiente ({user_id})")
         return {"success": False, "error": "Insufficient liquidity"}
 
     # 4. Validar spread absoluto y relativo
     if not validate_spread(symbol, entry_price, filters, order_book, mark_price):
-        print(f"❌ Spread demasiado alto para {symbol} ({user_id})")
+        logger.warning(f"[{symbol}] Spread demasiado alto ({user_id})")
         return {"success": False, "error": "Spread too high"}
 
     # 5. Validar slippage absoluto y relativo y ajustar precios si es necesario
     if not validate_slippage(symbol, entry_price, order_book):
-        print(f"❌ Slippage demasiado alto para {symbol} ({user_id})")
+        logger.warning(f"[{symbol}] Slippage demasiado alto ({user_id})")
         return {"success": False, "error": "Slippage too high"}
     else:
         entry_price, stop_loss, target_price = adjust_prices_by_slippage(
@@ -93,18 +97,18 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
 
     # 6. Validar RR mínimo después del ajuste de precios
     if not validate_min_rr_again(rr, probability, rules):
-        print(f"❌ RR ajustado ya no cumple el mínimo para {symbol} ({user_id})")
+        logger.warning(f"[{symbol}] RR ajustado ya no cumple el mínimo ({user_id})")
         return {"success": False, "error": "Adjusted RR below minimum"}
-    
+
     # 7. Usar capital ajustado o calcular capital base
     if capital_to_risk is None:
         capital_to_risk = calculate_risk_capital(rules, client)
-        print(f"💰 Using base capital: {capital_to_risk:.2f}")
+        logger.debug(f"[{symbol}] Using base capital: {capital_to_risk:.2f}")
     else:
-        print(f"💰 Using SQS-adjusted capital: {capital_to_risk:.2f}")
+        logger.debug(f"[{symbol}] Using SQS-adjusted capital: {capital_to_risk:.2f}")
 
     if not validate_balance(capital_to_risk, client):
-        print(f"❌ Balance insuficiente para operar {symbol} ({user_id})")
+        logger.warning(f"[{symbol}] Balance insuficiente ({user_id})")
         return {"success": False, "error": "Insufficient balance"}
     
 
@@ -113,7 +117,7 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
     step_size = float(filters["LOT_SIZE"]["stepSize"])
     qty = adjust_quantity_to_step_size(qty, step_size)
     if not validate_quantity(qty, entry_price, filters):
-        print(f"❌ Cantidad inválida para {symbol} ({user_id})")
+        logger.warning(f"[{symbol}] Cantidad inválida ({user_id})")
         return {"success": False, "error": "Invalid quantity"}
 
     # 8.5. Ajustar precios SL/TP al tickSize de Binance ANTES de validar
@@ -124,21 +128,21 @@ def create_order(symbol, entry_price, stop_loss, target_price, direction, rr, pr
     target_price = adjust_price_to_tick(target_price, tick_size)
 
     if stop_loss != stop_loss_original or target_price != target_price_original:
-        print(f"✅ Precios ajustados al tickSize={tick_size}: SL {stop_loss_original}→{stop_loss}, TP {target_price_original}→{target_price}")
+        logger.debug(f"[{symbol}] Precios ajustados al tickSize={tick_size}: SL {stop_loss_original}->{stop_loss}, TP {target_price_original}->{target_price}")
 
     # 9. Validar precios SL/TP con PRICE_FILTER y tickSize
     if not validate_price_filters(stop_loss, target_price, filters):
-        print(f"❌ SL o TP fuera de rango permitido para {symbol}")
+        logger.warning(f"[{symbol}] SL o TP fuera de rango permitido")
         return {"success": False, "error": "Invalid SL or TP price"}
 
     # 10. Ajustar leverage según reglas (o usar override de test mode)
     desired_leverage = leverage_override if leverage_override else rules.get(MAX_LEVERAGE, DEFAULT_MAX_LEVERAGE)
     if leverage_override:
-        print(f"🧪 Using test leverage override: {leverage_override}x for {symbol} ({user_id})")
+        logger.debug(f"[{symbol}] Using test leverage override: {leverage_override}x ({user_id})")
 
     success, applied_leverage = set_leverage(symbol, desired_leverage, client, user_id)
     if not success:
-        print(f"❌ No se pudo establecer apalancamiento para {symbol} ({user_id})")
+        logger.error(f"[{symbol}] No se pudo establecer apalancamiento ({user_id})")
         return {"success": False, "error": "Failed to set leverage"}
 
     # 11. Crear orden de entrada y SL/TP
@@ -179,14 +183,14 @@ def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, pr
     Valida todos los parámetros y ajusta según las reglas dinámicas.
     """
     symbol = symbol.upper()
-    print(f"🔄 Validando trade para {symbol}...")
+    logger.debug(f"[{symbol}] Validando trade...")
 
     # 1. Cancelar órdenes TP o SL remanentes
     cancel_orphan_orders(symbol, client, user_id)
 
     # Validar RR mínimo (la probabilidad ya fue validada por SQS)
     if rr < rules.get("min_rr"):
-        print(f"❌ RR por debajo del mínimo para {symbol}")
+        logger.warning(f"[{symbol}] RR por debajo del mínimo")
         return {"success": False, "error": "RR below minimum"}
 
     # NOTA: La validación de probabilidad se realiza previamente en SQSEvaluator usando sqs_config.absolute_minimums
@@ -194,12 +198,12 @@ def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, pr
 
     # 2. Verificar si ya existe una posición abierta
     if order_exists_for_symbol(symbol, client, user_id):
-            print(f"⚠️ Ya existe una posición abierta para {symbol} ({user_id}), se omite operación.")
+            logger.warning(f"[{symbol}] Ya existe una posición abierta ({user_id}), se omite operación.")
             return {"success": False, "error": f"Ya existe una posición abierta para {symbol} ({user_id}), se omite operación."}
 
     # 1. Validar precios iniciales
     if not entry_price or not stop_loss or not target_price:
-        print(f"❌ Precios inválidos para {symbol} ({user_id})")
+        logger.error(f"[{symbol}] Precios inválidos ({user_id})")
         return {"success": False, "error": "Invalid entry/stop/target prices"}
 
     # 3. Calcular capital ajustado por SQS
@@ -208,13 +212,13 @@ def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, pr
 
     # 🧪 TEST MODE: Pasar leverage override si existe
     if leverage_override:
-        print(f"🧪 Test mode: Using leverage override {leverage_override}x (user: {user_id})")
+        logger.debug(f"[{symbol}] Test mode: Using leverage override {leverage_override}x ({user_id})")
 
     # 4. Crear la orden con capital ajustado por SQS y leverage override (si existe)
     order_result = create_order(symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules, client, user_id, capital_to_risk, leverage_override)
     
     if order_result is None or not order_result.get("success") or "order_id" not in order_result:
-        print(f"⚠️ Orden fallida, no se guardará: {order_result} para {symbol}")
+        logger.warning(f"[{symbol}] Orden fallida, no se guardará: {order_result}")
         return {"success": False, "error": f"Orden fallida para {symbol}"}
 
 
@@ -223,7 +227,7 @@ def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, pr
     capital_risked = order_result.get("capital_risked")
     leverage_used = order_result.get("leverage")
 
-    print(f"✅ Trade creado exitosamente para {symbol} (saved in PostgreSQL & Redis)")
+    logger.info(f"[{symbol}] Trade creado exitosamente (saved in PostgreSQL & Redis)")
 
     # Retornar datos completos para registro en PostgreSQL
     return {
@@ -302,7 +306,7 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
             result = cur.fetchone()
 
         if not result:
-            print(f"⚠️ No trade found in DB for {symbol} ({user_id})")
+            logger.warning(f"[{symbol}] No trade found in DB ({user_id})")
             conn.close()
             return False
 
@@ -310,7 +314,7 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
 
         # Verificar si el trade ya fue cerrado
         if current_exit_reason != 'active':
-            print(f"⚠️ Trade {trade_id} already closed with exit_reason='{current_exit_reason}' for {symbol} ({user_id})")
+            logger.warning(f"[{symbol}] Trade {trade_id} already closed with exit_reason='{current_exit_reason}' ({user_id})")
             conn.close()
             return False
 
@@ -327,12 +331,12 @@ def _update_trade_in_postgresql(symbol: str, user_id: str, strategy: str, exit_p
         )
 
         if success:
-            print(f"📝 Trade {trade_id} updated in PostgreSQL: exit={exit_price:.2f}, reason={exit_reason}, pnl={pnl:.2f}")
+            logger.info(f"[{symbol}] Trade {trade_id} updated in PostgreSQL: exit={exit_price:.2f}, reason={exit_reason}, pnl={pnl:.2f}")
 
         return success
 
     except Exception as e:
-        print(f"⚠️ Error updating trade in PostgreSQL: {e}")
+        logger.warning(f"[{symbol}] Error updating trade in PostgreSQL: {e}")
         return False
 
 def _force_cancel_all_sl_tp_orders(symbol: str, client, user_id: str) -> int:
@@ -359,10 +363,10 @@ def _force_cancel_all_sl_tp_orders(symbol: str, client, user_id: str) -> int:
             if order_type in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]:
                 try:
                     client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
-                    print(f"✅ Canceled traditional {order_type} order {order['orderId']} for {symbol} ({user_id})")
+                    logger.debug(f"[{symbol}] Canceled traditional {order_type} order {order['orderId']} ({user_id})")
                     canceled_count += 1
                 except Exception as e:
-                    print(f"⚠️ Could not cancel traditional order {order['orderId']}: {e}")
+                    logger.warning(f"[{symbol}] Could not cancel traditional order {order['orderId']}: {e}")
 
         # 2) Cancel Algo SL/TP orders
         try:
@@ -390,18 +394,18 @@ def _force_cancel_all_sl_tp_orders(symbol: str, client, user_id: str) -> int:
                             signed=True,
                             data={"symbol": symbol, "algoId": algo_id}
                         )
-                        print(f"✅ Canceled Algo {algo_type} order {algo_id} for {symbol} ({user_id})")
+                        logger.debug(f"[{symbol}] Canceled Algo {algo_type} order {algo_id} ({user_id})")
                         canceled_count += 1
                     except Exception as e:
-                        print(f"⚠️ Could not cancel Algo order {algo_order.get('algoId')}: {e}")
+                        logger.warning(f"[{symbol}] Could not cancel Algo order {algo_order.get('algoId')}: {e}")
 
         except Exception as e:
-            print(f"⚠️ Could not fetch/cancel Algo Orders for {symbol}: {e}")
+            logger.warning(f"[{symbol}] Could not fetch/cancel Algo Orders: {e}")
 
     except Exception as e:
-        print(f"⚠️ Error in _force_cancel_all_sl_tp_orders for {symbol}: {e}")
+        logger.warning(f"[{symbol}] Error in _force_cancel_all_sl_tp_orders: {e}")
 
-    print(f"🧹 Forced cancellation complete: {canceled_count} SL/TP order(s) canceled for {symbol} ({user_id})")
+    logger.debug(f"[{symbol}] Forced cancellation complete: {canceled_count} SL/TP order(s) canceled ({user_id})")
     return canceled_count
 
 
@@ -536,21 +540,19 @@ def adjust_sl_tp_for_open_position(symbol: str, new_stop: float, new_target: flo
                 order_algo_id = algo_order.get("algoId")
                 if order_algo_id == created_sl_algo_id:
                     sl_verified = True
-                    print(f"✅ SL order verified in Binance (algoId: {created_sl_algo_id})")
+                    logger.debug(f"[{symbol}] SL order verified in Binance (algoId: {created_sl_algo_id})")
                 elif order_algo_id == created_tp_algo_id:
                     tp_verified = True
-                    print(f"✅ TP order verified in Binance (algoId: {created_tp_algo_id})")
+                    logger.debug(f"[{symbol}] TP order verified in Binance (algoId: {created_tp_algo_id})")
 
             if not sl_verified:
-                print(f"⚠️ WARNING: SL order created but not found in Binance open orders (algoId: {created_sl_algo_id})")
-                print(f"⚠️ Position may be unprotected. Manual verification recommended.")
+                logger.warning(f"[{symbol}] SL order created but not found in Binance open orders (algoId: {created_sl_algo_id})")
 
             if not tp_verified:
-                print(f"⚠️ WARNING: TP order created but not found in Binance open orders (algoId: {created_tp_algo_id})")
-                print(f"⚠️ Position may not auto-close at target. Manual verification recommended.")
+                logger.warning(f"[{symbol}] TP order created but not found in Binance open orders (algoId: {created_tp_algo_id})")
 
         except Exception as e:
-            print(f"⚠️ Could not verify SL/TP order creation: {e}")
+            logger.warning(f"[{symbol}] Could not verify SL/TP order creation: {e}")
 
         return {
             "success": True,
@@ -651,7 +653,7 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                     except Exception:
                         pass
         except Exception as e:
-            print(f"⚠️ Could not fetch Algo Orders for {symbol}: {e}")
+            logger.warning(f"[{symbol}] Could not fetch Algo Orders: {e}")
 
         if current_stop is None:
             # No hay SL existente -> permitir crear uno directamente (pero aún validar sanity)
@@ -669,7 +671,7 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                         return {"success": False, "error": f"Looser stop not allowed (current {current_stop}, new {new_stop_f})"}
             else:
                 # force_adjust=True - bypass tighten-only validation
-                print(f"⚠️ force_adjust enabled: allowing looser SL (current {current_stop} → new {new_stop_f})")
+                logger.warning(f"[{symbol}] force_adjust enabled: allowing looser SL (current {current_stop} -> new {new_stop_f})")
 
         # 4) Chequeo de sanidad respecto al mark actual
         mark_price = get_mark_price(symbol, client)
@@ -688,14 +690,14 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                     algo_id = order.get("algoId")
                     if algo_id:
                         client._request_futures_api('delete', 'algoOrder', signed=True, data={"symbol": symbol, "algoId": algo_id})
-                        print(f"✅ Cancelled Algo STOP_MARKET (algoId: {algo_id})")
+                        logger.debug(f"[{symbol}] Cancelled Algo STOP_MARKET (algoId: {algo_id})")
                 else:
                     # Cancelar orden tradicional
                     client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
-                    print(f"✅ Cancelled traditional STOP_MARKET (orderId: {order['orderId']})")
+                    logger.debug(f"[{symbol}] Cancelled traditional STOP_MARKET (orderId: {order['orderId']})")
             except Exception as e:
                 order_id = order.get("algoId") if is_algo else order.get("orderId")
-                print(f"⚠️ Could not cancel STOP_MARKET {order_id}: {e}")
+                logger.warning(f"[{symbol}] Could not cancel STOP_MARKET {order_id}: {e}")
 
         # 6) Crear nuevo STOP_MARKET (closePosition=True)
         sl_res = create_stop_loss_order(symbol, exit_side, new_stop_f, client, user_id)
@@ -719,15 +721,14 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
                 for algo_order in algo_orders:
                     if algo_order.get("algoId") == created_algo_id:
                         sl_verified = True
-                        print(f"✅ SL order verified in Binance (algoId: {created_algo_id})")
+                        logger.debug(f"[{symbol}] SL order verified in Binance (algoId: {created_algo_id})")
                         break
 
             if not sl_verified:
-                print(f"⚠️ WARNING: SL order created but not found in Binance open orders (algoId: {created_algo_id})")
-                print(f"⚠️ Position may be unprotected. Manual verification recommended.")
+                logger.warning(f"[{symbol}] SL order created but not found in Binance open orders (algoId: {created_algo_id})")
                 # No retornamos error para no bloquear el flujo, pero dejamos warning en logs
         except Exception as e:
-            print(f"⚠️ Could not verify SL order creation: {e}")
+            logger.warning(f"[{symbol}] Could not verify SL order creation: {e}")
 
         # ✅ Stop loss updated in Binance - PostgreSQL remains single source of truth
         return {
@@ -739,7 +740,7 @@ def adjust_stop_only_for_open_position(symbol: str, new_stop: float, client, use
         }
 
     except Exception as e:
-        print("Exception in adjust_stop_only_for_open_position:", e)
+        logger.error(f"[{symbol}] Exception in adjust_stop_only_for_open_position: {e}")
         return {"success": False, "error": f"adjust_stop_only failed: {e}"}
 
 
@@ -799,12 +800,11 @@ def adjust_tp_only_for_open_position(symbol: str, new_target: float, client, use
             return {"success": False, "error": "Invalid TP for SHORT (expected new_target < mark)"}
 
         # 4) Cancelar TODAS las órdenes TP existentes usando cancel_tp_only (más robusto)
-        print(f"🗑️ Canceling all existing TP orders for {symbol}...")
+        logger.debug(f"[{symbol}] Canceling all existing TP orders...")
         cancel_result = cancel_tp_only(symbol, client, user_id)
         if cancel_result.get("canceled_count", 0) > 0:
-            print(f"✅ Cancelled {cancel_result['canceled_count']} TP order(s)")
+            logger.debug(f"[{symbol}] Cancelled {cancel_result['canceled_count']} TP order(s)")
             # Esperar un poco para que Binance procese las cancelaciones
-            import time
             time.sleep(0.5)
 
         # 5) Crear nuevo TAKE_PROFIT_MARKET (closePosition=True)
@@ -830,15 +830,14 @@ def adjust_tp_only_for_open_position(symbol: str, new_target: float, client, use
                 for algo_order in algo_orders:
                     if algo_order.get("algoId") == created_algo_id:
                         tp_verified = True
-                        print(f"✅ TP order verified in Binance (algoId: {created_algo_id})")
+                        logger.debug(f"[{symbol}] TP order verified in Binance (algoId: {created_algo_id})")
                         break
 
             if not tp_verified:
-                print(f"⚠️ WARNING: TP order created but not found in Binance open orders (algoId: {created_algo_id})")
-                print(f"⚠️ Manual verification recommended.")
+                logger.warning(f"[{symbol}] TP order created but not found in Binance open orders (algoId: {created_algo_id})")
                 # No retornamos error para no bloquear el flujo, pero dejamos warning en logs
         except Exception as e:
-            print(f"⚠️ Could not verify TP order creation: {e}")
+            logger.warning(f"[{symbol}] Could not verify TP order creation: {e}")
 
         # ✅ Take profit updated in Binance
         return {
@@ -850,7 +849,7 @@ def adjust_tp_only_for_open_position(symbol: str, new_target: float, client, use
         }
 
     except Exception as e:
-        print("Exception in adjust_tp_only_for_open_position:", e)
+        logger.error(f"[{symbol}] Exception in adjust_tp_only_for_open_position: {e}")
         return {"success": False, "error": f"adjust_tp_only failed: {e}"}
 
 
@@ -946,7 +945,7 @@ def half_close_and_move_be(symbol: str, client, user_id: str) -> dict:
         }
 
     except Exception as e:
-        print("Exception in half_close_and_move_be:", e)
+        logger.error(f"[{sym}] Exception in half_close_and_move_be: {e}")
         return {"success": False, "error": f"half_close_and_move_be failed: {e}"}
 
 
@@ -1007,10 +1006,10 @@ def get_current_sl_tp(symbol: str, client) -> tuple:
                     tp_price = trigger_price
 
         except Exception as e:
-            print(f"⚠️ Could not fetch Algo Orders for {symbol}: {e}")
+            logger.warning(f"[{symbol}] Could not fetch Algo Orders: {e}")
 
     except Exception as e:
-        print(f"⚠️ Error getting current SL/TP for {symbol}: {e}")
+        logger.warning(f"[{symbol}] Error getting current SL/TP: {e}")
 
     return sl_price, tp_price
 
@@ -1037,22 +1036,22 @@ def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
             position_amt = float(positions[0].get("positionAmt", "0")) if positions else 0
             is_long = position_amt > 0
             mark_price = get_mark_price(symbol, client)
-            print(f"🔍 DEBUG: Position direction: {'LONG' if is_long else 'SHORT'}, mark_price: {mark_price}")
+            logger.debug(f"[{symbol}] Position direction: {'LONG' if is_long else 'SHORT'}, mark_price: {mark_price}")
         except Exception as e:
-            print(f"⚠️ Could not get position info: {e}")
+            logger.warning(f"[{symbol}] Could not get position info: {e}")
             is_long = None
             mark_price = None
 
         # Cancel traditional TP orders
         open_orders = client.futures_get_open_orders(symbol=symbol)
-        print(f"🔍 DEBUG: Found {len(open_orders)} open traditional orders for {symbol}")
+        logger.debug(f"[{symbol}] Found {len(open_orders)} open traditional orders")
         for order in open_orders:
             order_type = order.get("type")
-            print(f"  - Order type: {order_type}, orderId: {order.get('orderId')}")
+            logger.debug(f"[{symbol}] Order type: {order_type}, orderId: {order.get('orderId')}")
             if order_type == "TAKE_PROFIT_MARKET":
                 client.futures_cancel_order(symbol=symbol, orderId=order["orderId"])
                 canceled_count += 1
-                print(f"✅ Canceled traditional TP order {order['orderId']} for {symbol}")
+                logger.debug(f"[{symbol}] Canceled traditional TP order {order['orderId']}")
 
         # Cancel Algo TP orders
         try:
@@ -1069,7 +1068,7 @@ def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
             elif isinstance(algo_response, list):
                 algo_orders = algo_response
 
-            print(f"🔍 DEBUG: Found {len(algo_orders)} Algo orders for {symbol}")
+            logger.debug(f"[{symbol}] Found {len(algo_orders)} Algo orders")
             for order in algo_orders:
                 algo_type = order.get("algoType") or order.get("type", "")
                 algo_id = order.get("algoId")
@@ -1082,7 +1081,7 @@ def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
                 except:
                     trigger_price = 0
 
-                print(f"  - Algo type: {algo_type}, algoId: {algo_id}, side: {side}, positionSide: {position_side}, triggerPrice: {trigger_price}")
+                logger.debug(f"[{symbol}] Algo type: {algo_type}, algoId: {algo_id}, side: {side}, positionSide: {position_side}, triggerPrice: {trigger_price}")
 
                 # Match explicit TP types
                 if algo_type in ["TAKE_PROFIT_MARKET", "TAKE_PROFIT"]:
@@ -1093,7 +1092,7 @@ def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
                         data={"symbol": symbol.upper(), "algoId": algo_id}
                     )
                     canceled_count += 1
-                    print(f"✅ Canceled Algo TP order {algo_id} for {symbol}")
+                    logger.debug(f"[{symbol}] Canceled Algo TP order {algo_id}")
 
                 # For CONDITIONAL orders, determine if it's TP or SL based on trigger price
                 elif algo_type == "CONDITIONAL" and is_long is not None and mark_price and trigger_price:
@@ -1113,12 +1112,12 @@ def cancel_tp_only(symbol: str, client, user_id: str) -> dict:
                             data={"symbol": symbol.upper(), "algoId": algo_id}
                         )
                         canceled_count += 1
-                        print(f"✅ Canceled Algo TP order (CONDITIONAL) {algo_id} for {symbol} (trigger: {trigger_price}, mark: {mark_price})")
+                        logger.debug(f"[{symbol}] Canceled Algo TP order (CONDITIONAL) {algo_id} (trigger: {trigger_price}, mark: {mark_price})")
                     else:
-                        print(f"⏭️ Skipping SL order (CONDITIONAL) {algo_id} - keeping it intact")
+                        logger.debug(f"[{symbol}] Skipping SL order (CONDITIONAL) {algo_id} - keeping it intact")
 
         except Exception as e:
-            print(f"⚠️ Could not cancel Algo TP orders: {e}")
+            logger.warning(f"[{symbol}] Could not cancel Algo TP orders: {e}")
 
         return {
             "success": True,
@@ -1145,11 +1144,11 @@ if __name__ == "__main__":
     }
 
     # imprime la información de la orden
-    print(f"Creando orden para {symbol}...")
-    print(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Target Price: {target_price}")
-    print(f"Direction: {direction}, RR: {rr}, Probability: {probability}")
-    print(f"Rules: {rules}")    
-    
+    logger.info(f"Creando orden para {symbol}...")
+    logger.info(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Target Price: {target_price}")
+    logger.info(f"Direction: {direction}, RR: {rr}, Probability: {probability}")
+    logger.info(f"Rules: {rules}")
+
     """
     symbol, entry_price, stop_loss, target_price, direction, rr, probability, rules
     """

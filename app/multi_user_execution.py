@@ -3,6 +3,9 @@
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple
+
+from app.utils.logger_config import get_logger
+logger = get_logger()
 from app.futures import (
     close_position_and_cancel_orders,
     adjust_stop_only_for_open_position,
@@ -135,7 +138,7 @@ def execute_close_parallel(users: List[str], symbol: str, message: Dict[str, Any
     """
     Ejecuta CLOSE en paralelo para múltiples usuarios (velocidad crítica)
     """
-    print(f"🚨 Executing CLOSE in parallel for {len(users)} users: {symbol}")
+    logger.info(f"🚨 Executing CLOSE in parallel for {len(users)} users: {symbol}")
 
     results = []
     with ThreadPoolExecutor(max_workers=len(users), thread_name_prefix="guardian_close") as executor:
@@ -156,7 +159,7 @@ def execute_close_parallel(users: List[str], symbol: str, message: Dict[str, Any
                 result = future.result(timeout=10)
                 results.append(result)
                 success_emoji = "✅" if result["success"] else "❌"
-                print(f"{success_emoji} Close executed for {user_id}: {result.get('reason', 'unknown')}")
+                logger.info(f"{success_emoji} Close executed for {user_id}: {result.get('reason', 'unknown')}")
             except Exception as e:
                 error_result = {
                     "user_id": user_id,
@@ -166,7 +169,7 @@ def execute_close_parallel(users: List[str], symbol: str, message: Dict[str, Any
                     "timestamp": time.time()
                 }
                 results.append(error_result)
-                print(f"❌ Close failed for {user_id}: {e}")
+                logger.error(f"❌ Close failed for {user_id}: {e}")
 
     return results
 
@@ -175,7 +178,7 @@ def execute_adjust_sequential(users: List[str], symbol: str, message: Dict[str, 
     """
     Ejecuta ADJUST secuencialmente con datos frescos para cada usuario
     """
-    print(f"🔧 Executing ADJUST sequentially for {len(users)} users: {symbol}")
+    logger.info(f"🔧 Executing ADJUST sequentially for {len(users)} users: {symbol}")
 
     results = []
     for i, user_id in enumerate(users):
@@ -198,7 +201,7 @@ def execute_adjust_sequential(users: List[str], symbol: str, message: Dict[str, 
                     "timestamp": time.time()
                 }
                 results.append(result)
-                print(f"⚠️ Adjust validation failed for {user_id}: {reason}")
+                logger.warning(f"⚠️ Adjust validation failed for {user_id}: {reason}")
                 continue
 
             # Ejecutar adjust con parámetros ajustados
@@ -209,7 +212,7 @@ def execute_adjust_sequential(users: List[str], symbol: str, message: Dict[str, 
 
             success_emoji = "✅" if result["success"] else "❌"
             stop_price = adjusted_params.get("stop", message.get("stop", "N/A"))
-            print(f"{success_emoji} Adjust executed for {user_id}: stop={stop_price}, reason={result.get('reason')}")
+            logger.info(f"{success_emoji} Adjust executed for {user_id}: stop={stop_price}, reason={result.get('reason')}")
 
         except Exception as e:
             error_result = {
@@ -220,7 +223,7 @@ def execute_adjust_sequential(users: List[str], symbol: str, message: Dict[str, 
                 "timestamp": time.time()
             }
             results.append(error_result)
-            print(f"❌ Adjust failed for {user_id}: {e}")
+            logger.error(f"❌ Adjust failed for {user_id}: {e}")
 
     return results
 
@@ -229,7 +232,7 @@ def execute_half_close_sequential(users: List[str], symbol: str, message: Dict[s
     """
     Ejecuta HALF_CLOSE secuencialmente con validación
     """
-    print(f"💰 Executing HALF_CLOSE sequentially for {len(users)} users: {symbol}")
+    logger.info(f"💰 Executing HALF_CLOSE sequentially for {len(users)} users: {symbol}")
 
     results = []
     for i, user_id in enumerate(users):
@@ -249,7 +252,7 @@ def execute_half_close_sequential(users: List[str], symbol: str, message: Dict[s
                     "timestamp": time.time()
                 }
                 results.append(result)
-                print(f"⚠️ Half close validation failed for {user_id}: {reason}")
+                logger.warning(f"⚠️ Half close validation failed for {user_id}: {reason}")
                 continue
 
             # Ejecutar half_close
@@ -259,7 +262,7 @@ def execute_half_close_sequential(users: List[str], symbol: str, message: Dict[s
             results.append(result)
 
             success_emoji = "✅" if result["success"] else "❌"
-            print(f"{success_emoji} Half close executed for {user_id}: {result.get('reason')}")
+            logger.info(f"{success_emoji} Half close executed for {user_id}: {result.get('reason')}")
 
         except Exception as e:
             error_result = {
@@ -270,7 +273,7 @@ def execute_half_close_sequential(users: List[str], symbol: str, message: Dict[s
                 "timestamp": time.time()
             }
             results.append(error_result)
-            print(f"❌ Half close failed for {user_id}: {e}")
+            logger.error(f"❌ Half close failed for {user_id}: {e}")
 
     return results
 
@@ -283,7 +286,7 @@ def execute_multi_user_guardian_action(users: List[str], symbol: str,
     action = message.get("action", "").lower()
     execution_start = time.time()
 
-    print(f"🛡️ Guardian multi-user execution: {action.upper()} for {symbol} across {len(users)} users")
+    logger.info(f"🛡️ Guardian multi-user execution: {action.upper()} for {symbol} across {len(users)} users")
 
     # Ejecutar según estrategia óptima por tipo de acción
     if action == "close":
@@ -327,8 +330,8 @@ def execute_multi_user_guardian_action(users: List[str], symbol: str,
     }
 
     # Log final
-    print(f"📊 Guardian execution summary: {action.upper()} {symbol}")
-    print(f"   ✅ Success: {len(successful_executions)}/{len(users)} users ({summary['success_rate']:.1f}%)")
-    print(f"   ⏱️  Total time: {total_execution_time:.3f}s")
+    logger.info(f"📊 Guardian execution summary: {action.upper()} {symbol}")
+    logger.info(f"   ✅ Success: {len(successful_executions)}/{len(users)} users ({summary['success_rate']:.1f}%)")
+    logger.info(f"   ⏱️  Total time: {total_execution_time:.3f}s")
 
     return summary

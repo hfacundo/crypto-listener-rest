@@ -250,11 +250,11 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         # print(f"{log_prefix} Created new event loop for thread")
 
     try:
-        print(f"{log_prefix} Validando trade")
+        logger.debug(f"{log_prefix} Validando trade")
         rules = get_rules(user_id, strategy)
 
         if not rules.get("enabled"):
-            print(f"{log_prefix} Usuario deshabilitado")
+            logger.info(f"{log_prefix} Usuario deshabilitado")
             return {"user_id": user_id, "success": False, "reason": "user_disabled"}
 
         # ✨ NEW: Obtener configuración de modelo del usuario (default: "all")
@@ -279,10 +279,10 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
 
         # ✨ NEW: Validar que el model_id de la señal coincida con la configuración del usuario
         if user_model_filter != "all" and model_id != user_model_filter:
-            print(f"{log_prefix} Model REJECTED: User filter='{user_model_filter}', Signal model_id='{model_id}'")
+            logger.info(f"{log_prefix} Model REJECTED: User filter='{user_model_filter}', Signal model_id='{model_id}'")
             return {"user_id": user_id, "success": False, "reason": "model_filter_mismatch"}
 
-        print(f"{log_prefix} Model filter check PASSED: User='{user_model_filter}', Signal='{model_id}'")
+        logger.debug(f"{log_prefix} Model filter check PASSED: User='{user_model_filter}', Signal='{model_id}'")
 
         # 🧪 TEST MODE: Detectar si es un trade de prueba
         is_test = message.get("is_test", False)
@@ -296,20 +296,20 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
 
         # Debug logging para test mode
         if is_test:
-            print(f"{log_prefix} 🧪 TEST MODE DEBUG: is_test={is_test}, test_users={test_users_list}, current_user={user_id}")
+            logger.debug(f"{log_prefix} TEST MODE DEBUG: is_test={is_test}, test_users={test_users_list}, current_user={user_id}")
             if test_leverage:
-                print(f"{log_prefix} 🧪 Test Mode: LEV {test_leverage}x")
+                logger.debug(f"{log_prefix} Test Mode: LEV {test_leverage}x")
             else:
-                print(f"{log_prefix} 🧪 Test Mode: Activo")
+                logger.debug(f"{log_prefix} Test Mode: Activo")
 
         # 🧪 TEST MODE: Si es test, solo procesar para usuarios en la lista
         if is_test and test_users_list and user_id not in test_users_list:
-            print(f"{log_prefix} 🧪 TEST MODE: Skipping user (allowed_users={test_users_list})")
+            logger.debug(f"{log_prefix} TEST MODE: Skipping user (allowed_users={test_users_list})")
             return {"user_id": user_id, "success": False, "reason": "test_mode_skip"}
 
         # BANNED SYMBOLS VALIDATION
         if is_symbol_banned(user_id, strategy, symbol):
-            print(f"{log_prefix} Trade REJECTED: {symbol} is in banned symbols list")
+            logger.info(f"{log_prefix} Trade REJECTED: {symbol} is in banned symbols list")
             return {"user_id": user_id, "success": False, "reason": "banned_symbol"}
 
         # 🔍 DEBUG: Verificar último trade en BD antes de validación
@@ -332,16 +332,16 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
 
                 if last_trade_db:
                     trade_id, entry_time, exit_time, exit_reason, stop_price, target_price = last_trade_db
-                    print(f"{log_prefix} 🔍 Last trade in DB: id={trade_id}, exit_reason={exit_reason}, exit_time={exit_time}")
+                    logger.debug(f"{log_prefix} Last trade in DB: id={trade_id}, exit_reason={exit_reason}, exit_time={exit_time}")
 
                     if exit_reason == 'active':
-                        print(f"{log_prefix} ⚠️ WARNING: Last trade still marked as 'active' in DB - will validate with orphan detector")
+                        logger.warning(f"{log_prefix} Last trade still marked as 'active' in DB - will validate with orphan detector")
                 else:
-                    print(f"{log_prefix} 🔍 No previous trades in DB for {symbol}")
+                    logger.debug(f"{log_prefix} No previous trades in DB for {symbol}")
 
             conn.close()
         except Exception as e:
-            print(f"{log_prefix} ⚠️ Error checking last trade in DB: {e}")
+            logger.warning(f"{log_prefix} Error checking last trade in DB: {e}")
 
         # VALIDACIÓN INTEGRADA
         validator = UserRiskProfileValidator(user_id, strategy, rules)
@@ -357,26 +357,26 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         )
 
         if not can_trade:
-            print(f"{log_prefix} Trade REJECTED: {reason}")
+            logger.info(f"{log_prefix} Trade REJECTED: {reason}")
 
             # Log información adicional según el tipo de rechazo
             if validation_data.get("current_count") is not None:
                 current_count = validation_data.get("current_count", 0)
                 max_allowed = validation_data.get("max_allowed", 0)
-                print(f"{log_prefix}    Current: {current_count}/{max_allowed} trades open")
+                logger.info(f"{log_prefix}    Current: {current_count}/{max_allowed} trades open")
 
                 if validation_data.get("current_symbols"):
                     symbols_str = ', '.join(validation_data["current_symbols"])
-                    print(f"{log_prefix}    Open positions: {symbols_str}")
+                    logger.info(f"{log_prefix}    Open positions: {symbols_str}")
 
             if validation_data.get("daily_loss_pct") is not None:
                 daily_loss = validation_data.get("daily_loss_pct", 0)
-                print(f"{log_prefix}    Daily loss: {daily_loss:.2f}%")
+                logger.info(f"{log_prefix}    Daily loss: {daily_loss:.2f}%")
 
             if validation_data.get("last_stop_hours_ago") is not None:
                 hours_ago = validation_data.get("last_stop_hours_ago", 0)
                 cooldown = validation_data.get("cooldown_required_hours", 0)
-                print(f"{log_prefix}    Last stop: {hours_ago:.1f}h ago (cooldown: {cooldown}h)")
+                logger.info(f"{log_prefix}    Last stop: {hours_ago:.1f}h ago (cooldown: {cooldown}h)")
 
             return {"user_id": user_id, "success": False, "reason": reason}
 
@@ -388,19 +388,19 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         if is_test and test_users_list and user_id in test_users_list:
             original_multiplier = capital_multiplier
             capital_multiplier = 0.001  # 0.1% del capital normal
-            print(f"{log_prefix} 🧪 TEST MODE: Capital multiplier overridden: {original_multiplier:.3f}x → {capital_multiplier:.3f}x (0.1%)")
+            logger.debug(f"{log_prefix} TEST MODE: Capital multiplier overridden: {original_multiplier:.3f}x -> {capital_multiplier:.3f}x (0.1%)")
 
-        print(f"{log_prefix} ALL VALIDATIONS PASSED")
-        print(f"{log_prefix} Capital multiplier: {capital_multiplier:.3f}x ({sqs_grade})")
+        logger.info(f"{log_prefix} ALL VALIDATIONS PASSED")
+        logger.info(f"{log_prefix} Capital multiplier: {capital_multiplier:.3f}x ({sqs_grade})")
 
         # Log remaining slots if limits are configured
         if validation_data.get("max_allowed", 999) < 999:
             remaining = validation_data.get("max_allowed", 0) - validation_data.get("current_count", 0)
-            print(f"{log_prefix} Trade slots: {remaining} remaining")
+            logger.info(f"{log_prefix} Trade slots: {remaining} remaining")
 
         # Crear el trade
         client = get_binance_client_for_user(user_id)
-        print(f"{log_prefix} Seteando binance client")
+        logger.debug(f"{log_prefix} Seteando binance client")
 
         # 🧪 TEST MODE: Preparar leverage específico para test
         leverage_override = test_leverage if (is_test and test_users_list and user_id in test_users_list and test_leverage) else None
@@ -412,7 +412,7 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
         )
 
         if order is not None and order.get("success"):
-            print(f"{log_prefix} Trade exitoso")
+            logger.info(f"{log_prefix} Trade exitoso")
 
             # REGISTRAR EN POSTGRESQL Y REDIS
             try:
@@ -436,21 +436,21 @@ def process_user_trade(user_id: str, message: dict, strategy: str) -> dict:
                 )
 
                 if trade_id and trade_id != -1:
-                    print(f"{log_prefix} Trade registered in PostgreSQL: trade_id={trade_id}")
+                    logger.info(f"{log_prefix} Trade registered in PostgreSQL: trade_id={trade_id}")
                     # ✅ PostgreSQL is the single source of truth - No Redis writes
 
             except Exception as e:
-                print(f"{log_prefix} Error registering trade in PostgreSQL: {e}")
+                logger.error(f"{log_prefix} Error registering trade in PostgreSQL: {e}")
 
             return {"user_id": user_id, "success": True, "reason": "trade_created", "trade_id": trade_id if 'trade_id' in locals() else None}
         else:
-            print(f"{log_prefix} Trade no realizado")
+            logger.warning(f"{log_prefix} Trade no realizado")
             return {"user_id": user_id, "success": False, "reason": "order_failed"}
 
     except Exception as e:
-        print(f"{log_prefix} Error processing: {e}")
+        logger.error(f"{log_prefix} Error processing: {e}")
         import traceback
-        print(f"{log_prefix} Traceback: {traceback.format_exc()}")
+        logger.error(f"{log_prefix} Traceback: {traceback.format_exc()}")
         return {"user_id": user_id, "success": False, "reason": f"exception: {str(e)}"}
 
 
@@ -464,7 +464,7 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
     """
     start_time = time.time()
 
-    print(f"📩 Trade request received: {trade.symbol} {trade.trade} @ {trade.entry}")
+    logger.info(f"Trade request received: {trade.symbol} {trade.trade} @ {trade.entry}")
 
     # Validar campos requeridos
     if not all([trade.symbol, trade.entry, trade.stop, trade.target, trade.trade, trade.rr, trade.probability]):
@@ -477,46 +477,38 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
         signal_age = time.time() - trade.generated_timestamp
 
         if signal_age > MAX_SIGNAL_AGE_SECONDS:
-            print(f"⏱️  Signal REJECTED: Too old ({signal_age:.2f}s > {MAX_SIGNAL_AGE_SECONDS}s)")
-            print(f"   Generated at: {trade.generated_at_utc}")
-            print(f"   Signal expired - discarding to prevent stale data execution")
+            logger.warning(f"Signal REJECTED: Too old ({signal_age:.2f}s > {MAX_SIGNAL_AGE_SECONDS}s)")
+            logger.warning(f"   Generated at: {trade.generated_at_utc}")
+            logger.warning(f"   Signal expired - discarding to prevent stale data execution")
             raise HTTPException(
                 status_code=400,
                 detail=f"Signal expired: {signal_age:.2f}s old (max: {MAX_SIGNAL_AGE_SECONDS}s)"
             )
         else:
-            print(f"⏰ Signal freshness: {signal_age:.2f}s old (within {MAX_SIGNAL_AGE_SECONDS}s TTL)")
+            logger.debug(f"Signal freshness: {signal_age:.2f}s old (within {MAX_SIGNAL_AGE_SECONDS}s TTL)")
 
     # Convertir a dict para procesar
     message = trade.model_dump()
 
     # Extract strategy from request (archer_model or archer_dual)
     request_strategy = trade.strategy if trade.strategy else STRATEGY
-    print(f"📊 Strategy received: {request_strategy}")
+    logger.info(f"Strategy received: {request_strategy}")
 
     # Calcular horas UTC y Ciudad de México en formato AM/PM
     now_utc = datetime.now(timezone.utc)
     now_cdmx = now_utc.astimezone(timezone(timedelta(hours=-6)))  # Ciudad de México UTC-6
-    time_str = f"🕐 {now_utc.strftime('%I:%M:%S %p')} UTC ({now_cdmx.strftime('%I:%M:%S %p')} CDMX)"
+    time_str = f"{now_utc.strftime('%I:%M:%S %p')} UTC ({now_cdmx.strftime('%I:%M:%S %p')} CDMX)"
 
     # Log del request recibido (solo una vez)
     direction_str = trade.trade.upper() if trade.trade else "UNKNOWN"
-    print(f"\n{'='*70}")
-    print(f"📨 NUEVO REQUEST RECIBIDO - {trade.symbol}")
-    print(f"{time_str}")
-    print(f"{'='*70}")
-    print(f"📊 Dirección:     {direction_str}")
-    print(f"💹 Entry:         ${trade.entry:,.4f}")
-    print(f"🛑 Stop Loss:     ${trade.stop:,.4f}")
-    print(f"🎯 Target:        ${trade.target:,.4f}")
-    print(f"⚖️  RR:            {trade.rr:.2f}")
-    print(f"🎲 Probabilidad:  {trade.probability}%")
-    if trade.ev is not None:
-        print(f"💰 EV:            {trade.ev:.4f}")
-    print(f"{'='*70}\n")
+    logger.info(f"{'='*60}")
+    logger.info(f"NUEVO REQUEST - {trade.symbol} | {time_str}")
+    logger.info(f"Direction: {direction_str} | Entry: ${trade.entry:,.4f} | SL: ${trade.stop:,.4f} | TP: ${trade.target:,.4f}")
+    logger.info(f"RR: {trade.rr:.2f} | Prob: {trade.probability}%" + (f" | EV: {trade.ev:.4f}" if trade.ev is not None else ""))
+    logger.info(f"{'='*60}")
 
     # PARALLEL EXECUTION: Process all users simultaneously
-    print(f"🚀 Processing trade for {len(USERS)} users in parallel")
+    logger.info(f"Processing trade for {len(USERS)} users in parallel")
 
     with ThreadPoolExecutor(max_workers=len(USERS), thread_name_prefix="User") as executor:
         # Submit all user tasks
@@ -533,9 +525,9 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
                 result = future.result()
                 results.append(result)
             except Exception as e:
-                print(f"❌ Exception in thread for {user_id}: {e}")
+                logger.error(f"Exception in thread for {user_id}: {e}")
                 import traceback
-                print(f"Traceback: {traceback.format_exc()}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 results.append({"user_id": user_id, "success": False, "reason": f"thread_exception: {str(e)}"})
 
     # Log summary
@@ -543,11 +535,13 @@ async def execute_trade(trade: TradeRequest) -> JSONResponse:
     failed = len(results) - successful
     execution_time = time.time() - start_time
 
-    print(f"📊 Trade processing complete: {successful} successful, {failed} failed in {execution_time:.3f}s")
+    logger.info(f"Trade processing complete: {successful} successful, {failed} failed in {execution_time:.3f}s")
 
     for result in results:
-        status = "✅" if result["success"] else "❌"
-        print(f"{status} {result['user_id']}: {result['reason']}")
+        if result["success"]:
+            logger.info(f"  [OK] {result['user_id']}: {result['reason']}")
+        else:
+            logger.warning(f"  [FAIL] {result['user_id']}: {result['reason']}")
 
     return JSONResponse(
         status_code=200 if successful > 0 else 400,
