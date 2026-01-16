@@ -1,42 +1,26 @@
 """
-Logger configuration with RotatingFileHandler
-Rotates logs when they reach 5MB, keeping up to 5 backup files
+Logger configuration - Console only (stdout)
+All logs go to stdout, which can be redirected to uvicorn.log via nohup
 """
 import logging
-import os
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 
 def setup_logger(
     name: str = "crypto-listener-rest",
-    log_file: str = "logs/crypto-listener.log",
-    max_bytes: int = 5 * 1024 * 1024,  # 5MB
-    backup_count: int = 1,
     level: int = logging.INFO
 ) -> logging.Logger:
     """
-    Configura un logger con RotatingFileHandler y console output.
+    Configura un logger que escribe solo a stdout (consola).
+    Usa nohup para redirigir a uvicorn.log:
+        nohup uvicorn main:app --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
 
     Args:
         name: Nombre del logger
-        log_file: Ruta del archivo de log (se crea el directorio si no existe)
-        max_bytes: Tamaño máximo del archivo antes de rotar (default: 5MB)
-        backup_count: Número de archivos de backup a mantener (default: 1)
         level: Nivel de logging (default: INFO)
 
     Returns:
         Logger configurado
-
-    Archivos generados:
-        - crypto-listener.log (activo)
-        - crypto-listener.log.1 (backup, se elimina al rotar)
     """
-    # Crear directorio de logs si no existe
-    log_path = Path(log_file)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Crear logger
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
@@ -50,18 +34,7 @@ def setup_logger(
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # Handler 1: RotatingFileHandler (rota a 5MB)
-    file_handler = RotatingFileHandler(
-        filename=log_file,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding='utf-8'
-    )
-    file_handler.setLevel(level)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    # Handler 2: Console output (para nohup y debug)
+    # Solo console output (stdout) - se redirige a uvicorn.log con nohup
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
