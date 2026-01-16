@@ -745,6 +745,125 @@ def create_take_profit_order(symbol: str, direction: str, stop_price: float, cli
         traceback.print_exc()
         return None
 
+def verify_position_closed(symbol: str, client, user_id: str) -> bool:
+    """
+    Verifica que una posición realmente se haya cerrado.
+
+    Args:
+        symbol: Símbolo a verificar
+        client: Cliente de Binance
+        user_id: ID del usuario
+
+    Returns:
+        bool: True si la posición está cerrada, False si sigue abierta
+    """
+    try:
+        positions = client.futures_position_information(symbol=symbol)
+        position_amt = float(positions[0]['positionAmt']) if positions else 0
+
+        if position_amt == 0:
+            logger.info(f"✅ [{symbol}] VERIFICADO - Posición cerrada ({user_id})")
+            return True
+        else:
+            logger.error(f"❌ [{symbol}] VERIFICACIÓN FALLÓ - Posición={position_amt} ({user_id})")
+            return False
+    except Exception as e:
+        logger.error(f"Error verificando posición {symbol}: {e}")
+        return False
+
+
+def emergency_close_position(
+    symbol: str,
+    direction: str,
+    quantity: float,
+    user_id: str,
+    client,
+    max_retries: int = 5
+) -> bool:
+    """
+    Cierra una posición de emergencia cuando falla la creación de SL/TP.
+    Usa múltiples estrategias para garantizar el cierre:
+    1. closePosition=True (más seguro - Binance cierra toda la posición)
+    2. Fallback a reduceOnly con quantity exacta
+    3. Verificación post-cierre
+    4. Logging crítico si todo falla
+
+    Args:
+        symbol: Símbolo de la posición
+        direction: Dirección original (BUY o SELL)
+        quantity: Cantidad de la posición
+        user_id: ID del usuario
+        client: Cliente de Binance
+        max_retries: Número máximo de reintentos (default: 5)
+
+    Returns:
+        bool: True si se cerró exitosamente, False si falló
+    """
+    close_direction = SELL if direction == BUY else BUY
+
+    # ========== ESTRATEGIA 1: closePosition=True (MÁS SEGURO) ==========
+    logger.warning(f"🚨 [{symbol}] Iniciando cierre de emergencia de posición ({user_id})")
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.warning(f"🚨 [{symbol}] Intento {attempt}/{max_retries} cerrando con closePosition=True")
+
+            result = client.futures_create_order(
+                symbol=symbol,
+                side=close_direction,
+                type="MARKET",
+                closePosition=True  # Binance cierra toda la posición automáticamente
+            )
+
+            logger.info(f"✅ [{symbol}] Orden de cierre ejecutada: {result}")
+
+            # Verificar que se cerró
+            time.sleep(1)
+            if verify_position_closed(symbol, client, user_id):
+                logger.info(f"✅ [{symbol}] Posición cerrada exitosamente con closePosition=True")
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ [{symbol}] Intento {attempt} con closePosition falló: {e}")
+            if attempt < max_retries:
+                wait_time = 2 ** attempt  # Backoff exponencial: 2s, 4s, 8s, 16s, 32s
+                logger.debug(f"⏳ [{symbol}] Esperando {wait_time}s antes del siguiente intento...")
+                time.sleep(wait_time)
+
+    # ========== ESTRATEGIA 2: reduceOnly con quantity (FALLBACK) ==========
+    logger.warning(f"🚨 [{symbol}] closePosition falló, intentando reduceOnly con quantity={quantity}")
+
+    for attempt in range(1, 3):  # Solo 2 intentos para el fallback
+        try:
+            result = client.futures_create_order(
+                symbol=symbol,
+                side=close_direction,
+                type="MARKET",
+                quantity=quantity,
+                reduceOnly=True
+            )
+
+            logger.info(f"✅ [{symbol}] Posición cerrada con reduceOnly: {result}")
+
+            time.sleep(1)
+            if verify_position_closed(symbol, client, user_id):
+                logger.info(f"✅ [{symbol}] Posición cerrada exitosamente con reduceOnly")
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ [{symbol}] Intento {attempt} con reduceOnly falló: {e}")
+            if attempt < 2:
+                time.sleep(2)
+
+    # ========== TODO FALLÓ - ALERTA CRÍTICA ==========
+    logger.critical(f"🚨🚨🚨 EMERGENCIA [{symbol}] ({user_id}): NO SE PUDO CERRAR POSICIÓN SIN SL/TP")
+    logger.critical(f"    Direction: {direction}, Close Direction: {close_direction}, Quantity: {quantity}")
+    logger.critical(f"    ⚠️ ACCIÓN MANUAL REQUERIDA INMEDIATAMENTE ⚠️")
+    logger.critical(f"    ⚠️ POSICIÓN ABIERTA SIN STOP LOSS NI TAKE PROFIT ⚠️")
+
+    return False
+
+
 def create_safe_trade_with_sl_tp(
     symbol: str,
     entry_price: float,
@@ -759,7 +878,7 @@ def create_safe_trade_with_sl_tp(
 ) -> dict:
     """
     Crea una operación segura en Binance Futures con orden MARKET + SL + TP.
-    Si alguna orden SL o TP falla, cancela la entrada para evitar quedar expuesto.
+    Si alguna orden SL o TP falla, CIERRA LA POSICIÓN inmediatamente para evitar quedar expuesto.
     """
 
     logger.info(f"[{symbol}] Iniciando create_safe_trade_with_sl_tp ({user_id})")
@@ -808,13 +927,22 @@ def create_safe_trade_with_sl_tp(
         logger.debug(f"[{symbol}] Resultado SL ({user_id}): {sl_result}")
 
         if not sl_result:
-            logger.error(f"[{symbol}] SL falló. Cancelando orden original {order_id}")
-            client.futures_cancel_order(symbol=symbol, orderId=order_id)
+            logger.error(f"[{symbol}] SL falló. CERRANDO POSICIÓN inmediatamente por seguridad ({user_id})")
+
+            # ⚠️ CRÍTICO: Cerrar posición en lugar de cancelar orden (la orden ya está FILLED)
+            closed = emergency_close_position(symbol, direction, quantity, user_id, client)
+
+            if closed:
+                logger.warning(f"⚠️ [{symbol}] Posición cerrada exitosamente - Trade abortado por fallo en SL ({user_id})")
+            else:
+                logger.critical(f"🚨 [{symbol}] CRÍTICO: Posición SIN SL quedó abierta - revisar manualmente ({user_id})")
+
             return {
                 "success": False,
                 "step": "STOP_LOSS",
-                "error": "Error al crear SL. Orden cancelada.",
-                "entry_order_id": order_id
+                "error": "Error al crear SL. Posición cerrada por seguridad." if closed else "Error al crear SL. CRÍTICO: No se pudo cerrar posición.",
+                "entry_order_id": order_id,
+                "position_closed": closed
             }
 
         # Paso 3: Crear Take Profit
@@ -823,13 +951,24 @@ def create_safe_trade_with_sl_tp(
         logger.debug(f"[{symbol}] Resultado TP ({user_id}): {tp_result}")
 
         if not tp_result:
-            logger.error(f"[{symbol}] TP falló. Cancelando orden original {order_id} ({user_id})")
-            client.futures_cancel_order(symbol=symbol, orderId=order_id)
+            logger.error(f"[{symbol}] TP falló. CERRANDO POSICIÓN inmediatamente por seguridad ({user_id})")
+
+            # ⚠️ CRÍTICO: Cerrar posición en lugar de cancelar orden (la orden ya está FILLED)
+            # Nota: Si llegamos aquí, el SL sí se creó, pero el TP falló
+            # Por seguridad, cerramos la posición completa (el SL se cancelará automáticamente)
+            closed = emergency_close_position(symbol, direction, quantity, user_id, client)
+
+            if closed:
+                logger.warning(f"⚠️ [{symbol}] Posición cerrada exitosamente - Trade abortado por fallo en TP ({user_id})")
+            else:
+                logger.critical(f"🚨 [{symbol}] CRÍTICO: Posición SIN TP quedó abierta (solo tiene SL) - revisar manualmente ({user_id})")
+
             return {
                 "success": False,
                 "step": "TAKE_PROFIT",
-                "error": "Error al crear TP. Orden cancelada.",
-                "entry_order_id": order_id
+                "error": "Error al crear TP. Posición cerrada por seguridad." if closed else "Error al crear TP. CRÍTICO: No se pudo cerrar posición.",
+                "entry_order_id": order_id,
+                "position_closed": closed
             }
 
         # ✅ NUEVO: Manejar respuesta del Algo Order API (usa 'algoId' en lugar de 'orderId')
@@ -850,11 +989,26 @@ def create_safe_trade_with_sl_tp(
 
     except Exception as e:
         logger.error(f"[{symbol}] Excepción inesperada: {e}")
+        traceback.print_exc()
+
+        # ⚠️ CRÍTICO: Si hay una excepción después de crear la orden MARKET,
+        # intentar cerrar la posición para evitar quedar expuesto
+        position_closed = False
+        if 'order_id' in locals():
+            logger.error(f"[{symbol}] Detectada excepción después de crear orden MARKET. Cerrando posición ({user_id})")
+            position_closed = emergency_close_position(symbol, direction, quantity, user_id, client)
+
+            if position_closed:
+                logger.warning(f"⚠️ [{symbol}] Posición cerrada exitosamente - Trade abortado por excepción ({user_id})")
+            else:
+                logger.critical(f"🚨 [{symbol}] CRÍTICO: Excepción inesperada y no se pudo cerrar posición ({user_id})")
+
         return {
             "success": False,
             "step": "EXCEPTION",
             "error": str(e),
-            "entry_order_id": order_id
+            "entry_order_id": order_id if 'order_id' in locals() else None,
+            "position_closed": position_closed
         }
 
 def cancel_orphan_orders(symbol: str, client, user_id: str):
