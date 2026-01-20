@@ -22,6 +22,7 @@ from app.utils.db.query_executor import get_latest_order_id_for_symbol, update_t
 
 
 # 🔹 Función para calcular saldo usable
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
 def calculate_risk_capital(rules, client):
     """
     Calcula el capital a arriesgar basado en el balance USDT y el porcentaje de riesgo.
@@ -437,6 +438,7 @@ def validate_min_rr_again(rr: float, probability: float, rules: dict) -> bool:
     logger.debug(f"RR={rr:.2f} passed validation")
     return True
 
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
 def validate_balance(capital_to_risk: float, client) -> bool:
     """
     Validates that the capital to risk does not exceed the available USDT balance.
@@ -458,6 +460,7 @@ def validate_balance(capital_to_risk: float, client) -> bool:
 
 
 
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
 def validate_symbol_filters(filters: dict, symbol: str) -> bool:
     """
     Verifica que los filtros esenciales estén presentes y tengan valores válidos para operar el símbolo.
@@ -501,6 +504,7 @@ def validate_symbol_filters(filters: dict, symbol: str) -> bool:
         logger.error(f"[{symbol}] Error al validar filtros: {e}")
         return False
 
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
 def calculate_quantity(entry_price: float, stop_loss: float, rules: dict, client, capital_to_risk: float = None) -> float:
     """
     Calcula la cantidad de contratos a comprar/vender basándose en el capital a arriesgar
@@ -536,6 +540,7 @@ def calculate_quantity(entry_price: float, stop_loss: float, rules: dict, client
 
     return float(qty)
 
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
 def validate_quantity(qty: float, entry_price: float, filters: dict) -> bool:
     """
     Valida que la cantidad cumpla con minQty, stepSize y minNotional.

@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from app.utils.logger_config import get_logger
 logger = get_logger()
 from app.utils.constants import (
-    TABLE_RULES, TABLE_CRYPTOS, TABLE_TRADES, DEFAULT_SPREAD_MULTIPLIER
+    TABLE_CRYPTOS, TABLE_TRADES, DEFAULT_SPREAD_MULTIPLIER
 )
 
 # NUEVO: Importar diccionario local de rules (solo como emergency fallback)

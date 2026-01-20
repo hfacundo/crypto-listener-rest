@@ -250,8 +250,22 @@ def create_trade(symbol, entry_price, stop_loss, target_price, direction, rr, pr
 # NOTE: get_symbol_filters is imported from app.utils.binance.utils (line 40)
 # Fetches filters directly from Binance API (no caching needed on EC2)
 
-# NEW: helper to read current position amount (+long / -short / 0)
-def _get_position_amt(symbol: str, client) -> float:
+# Helper to read current position amount (+long / -short / 0)
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
+def get_position_amt(symbol: str, client) -> float:
+    """
+    Obtiene el monto de la posición abierta para un símbolo.
+
+    Args:
+        symbol: Par de trading (ej: BTCUSDT)
+        client: Cliente de Binance
+
+    Returns:
+        float: Monto de la posición
+            > 0: Posición LONG
+            < 0: Posición SHORT
+            = 0: Sin posición
+    """
     pos = client.futures_position_information(symbol=symbol)
     if not pos:
         return 0.0
@@ -425,7 +439,7 @@ def close_position_and_cancel_orders(symbol: str, client, user_id: str, strategy
         dict con success, order_id o error
     """
     try:
-        position_amt = _get_position_amt(symbol, client)
+        position_amt = get_position_amt(symbol, client)
         if position_amt == 0:
             return {"success": True, "message": "No open position to close"}
 
@@ -490,7 +504,7 @@ def adjust_sl_tp_for_open_position(symbol: str, new_stop: float, new_target: flo
             return {"success": False, "error": "SL/TP outside PRICE_FILTER bounds"}
 
         # 3) Ensure there's a position and detect direction
-        position_amt = _get_position_amt(symbol, client)
+        position_amt = get_position_amt(symbol, client)
         if position_amt == 0:
             return {"success": False, "error": "No open position to adjust"}
 

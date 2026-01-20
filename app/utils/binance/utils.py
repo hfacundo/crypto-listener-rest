@@ -47,6 +47,7 @@ def get_dynamic_spread_multiplier(symbol: str) -> int:
         return DEFAULT_SPREAD_MULTIPLIER  # Valor por defecto para símbolos no clasificados
 
 
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
 def get_symbol_filters(symbol: str, client) -> dict:
     """
     Obtiene los filtros de trading para un símbolo usando cache local de exchange_info.
@@ -82,6 +83,7 @@ def get_symbol_filters(symbol: str, client) -> dict:
         return {}
 
 
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
 def get_mark_price(symbol: str, client) -> float:
     """
     Obtiene mark price usando cache de crypto-analyzer-redis.
@@ -250,6 +252,7 @@ def set_leverage(symbol: str, desired_leverage: int, client, user_id) -> tuple[b
         return False, 1
 
 
+# USADO EN: api.py, trade_executor.py (nueva versión simplificada)
 def adjust_quantity_to_step_size(qty: float, step_size: float) -> float:
     """
     Ajusta la cantidad a un múltiplo válido de stepSize según Binance.
