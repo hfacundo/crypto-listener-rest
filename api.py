@@ -2,7 +2,7 @@
 api.py - REST API para ejecución de trades
 
 Endpoints:
-  POST /trade  - Abre un trade para todos los usuarios
+  POST /execute-trade  - Abre un trade para todos los usuarios
   GET /health  - Health check
 """
 
@@ -33,7 +33,7 @@ app = FastAPI(
 
 
 # ========== ENDPOINTS ==========
-@app.post("/trade")
+@app.post("/execute-trade")
 async def open_trade(request: TradeRequest):
     """
     Abre un trade con stop loss garantizado para todos los usuarios.
